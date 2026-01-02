@@ -7,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -38,7 +39,6 @@ class _HomeState extends State<Home> {
   double currentTime = 0.0;
   double totalDuration = 0.0;
   double playbackSpeed = 1.0;
-  bool isFullscreen = false;
   bool showControls = true;
   Timer? hideControlsTimer;
   Timer? skipCheckTimer;
@@ -48,9 +48,11 @@ class _HomeState extends State<Home> {
   double scanProgress = 0.0;
 
   // Detection settings
-  String selectedDetector =
-      'nudenet'; // 'nudenet', 'nsfw_model', 'yahoo_open_nsfw'
-  double sensitivityThreshold = 0.6; // 0.0 to 1.0
+  String selectedDetector = 'nudenet';
+  double sensitivityThreshold = 0.6;
+
+  // Auto-skip or warn setting
+  bool autoSkipEnabled = true; // true = auto skip, false = just warn
 
   // Skip timestamps: Map of "start_time" -> "skip_to_time"
   Map<String, String> skipTimestamps = {};
@@ -69,7 +71,6 @@ class _HomeState extends State<Home> {
       ),
     );
 
-    // Listen to player state changes
     player.stream.playing.listen((playing) {
       if (mounted) {
         setState(() {
@@ -164,7 +165,6 @@ class _HomeState extends State<Home> {
     });
 
     try {
-      // Extract frames from video at intervals (every 2 seconds)
       final tempDir = await getTemporaryDirectory();
       final framesDir = Directory('${tempDir.path}/frames');
       if (await framesDir.exists()) {
@@ -172,21 +172,20 @@ class _HomeState extends State<Home> {
       }
       await framesDir.create();
 
-      // Calculate total frames to extract
       int intervalSeconds = 2;
       int totalFrames = (totalDuration / intervalSeconds).ceil();
 
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Scanning video... This may take a while')),
+        const SnackBar(
+          content: Text('Scanning video... This may take a while'),
+        ),
       );
 
-      // Extract frames using ffmpeg command line
       for (int i = 0; i < totalFrames; i++) {
         double timestamp = i * intervalSeconds.toDouble();
         String framePath =
             '${framesDir.path}/frame_${i}_${timestamp.toStringAsFixed(0)}.jpg';
 
-        // Use Process.run instead of FFmpegKit
         var result = await Process.run('ffmpeg', [
           '-ss',
           timestamp.toString(),
@@ -200,11 +199,9 @@ class _HomeState extends State<Home> {
         ]);
 
         if (result.exitCode == 0) {
-          // Analyze frame for NSFW content
           bool isNSFW = await analyzeFrameForNSFW(framePath);
 
           if (isNSFW) {
-            // Mark this scene as NSFW
             detectedScenes.add({
               'timestamp': timestamp,
               'frame': i,
@@ -218,7 +215,6 @@ class _HomeState extends State<Home> {
         });
       }
 
-      // Generate skip timestamps from detected scenes
       generateSkipTimestamps();
 
       setState(() {
@@ -258,7 +254,6 @@ class _HomeState extends State<Home> {
 
       String pythonScript = '';
 
-      // Choose detection model based on user selection
       switch (selectedDetector) {
         case 'nudenet':
           pythonScript =
@@ -281,9 +276,7 @@ import numpy as np
 predictions = predict.classify("$framePath")
 if "$framePath" in predictions:
     scores = predictions["$framePath"]
-    # Check for explicit content (porn, hentai)
     nsfw_score = scores.get("porn", 0) + scores.get("hentai", 0)
-    # Also consider sexy content based on sensitivity
     if $sensitivityThreshold < 0.7:
         nsfw_score += scores.get("sexy", 0) * 0.5
     is_nsfw = nsfw_score > $sensitivityThreshold
@@ -300,17 +293,14 @@ import tensorflow as tf
 import numpy as np
 from PIL import Image
 
-# Load Yahoo Open NSFW model
 model = tf.keras.models.load_model("$currentDir/.venv/open_nsfw_model")
 
-# Preprocess image
 img = Image.open("$framePath").convert('RGB').resize((224, 224))
 img_array = np.array(img) / 255.0
 img_array = np.expand_dims(img_array, axis=0)
 
-# Predict
 prediction = model.predict(img_array)
-nsfw_score = prediction[0][1]  # NSFW probability
+nsfw_score = prediction[0][1]
 
 is_nsfw = nsfw_score > $sensitivityThreshold
 print("NSFW" if is_nsfw else "SAFE")
@@ -324,15 +314,12 @@ import torch
 from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
 
-# Load CLIP model
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
-# Load and process image
 image = Image.open("$framePath")
 inputs = processor(images=image, return_tensors="pt")
 
-# Define NSFW prompts
 nsfw_prompts = [
     "explicit nudity", "naked person", "sexual content", 
     "pornographic image", "intimate body parts",
@@ -340,22 +327,17 @@ nsfw_prompts = [
 ]
 safe_prompts = ["normal clothed person", "safe content", "appropriate image"]
 
-# Get text embeddings
 text_inputs = processor(text=nsfw_prompts + safe_prompts, return_tensors="pt", padding=True)
 
-# Calculate similarities
 with torch.no_grad():
     image_features = model.get_image_features(**inputs)
     text_features = model.get_text_features(**text_inputs)
     
-    # Normalize features
     image_features = image_features / image_features.norm(dim=-1, keepdim=True)
     text_features = text_features / text_features.norm(dim=-1, keepdim=True)
     
-    # Calculate similarity
     similarities = (image_features @ text_features.T).squeeze()
 
-# Check if NSFW prompts have higher similarity
 nsfw_sim = similarities[:len(nsfw_prompts)].max().item()
 safe_sim = similarities[len(nsfw_prompts):].max().item()
 
@@ -365,12 +347,10 @@ print("NSFW" if is_nsfw else "SAFE")
           break;
       }
 
-      // Try venv python first
       ProcessResult result;
       if (await File(pythonPath).exists()) {
         result = await Process.run(pythonPath, ['-c', pythonScript]);
       } else {
-        // Fallback to system python with venv packages in path
         result = await Process.run('python3', [
           '-c',
           'import sys; sys.path.insert(0, "$currentDir/.venv/lib/python3.10/site-packages"); ' +
@@ -380,14 +360,11 @@ print("NSFW" if is_nsfw else "SAFE")
 
       if (result.exitCode == 0) {
         String output = result.stdout.toString().trim();
-        print('${selectedDetector.toUpperCase()} result: $output');
         return output.contains("NSFW");
       } else {
-        print('Error running detector: ${result.stderr}');
         return false;
       }
     } catch (e) {
-      print('Error analyzing frame: $e');
       return false;
     }
   }
@@ -400,7 +377,6 @@ print("NSFW" if is_nsfw else "SAFE")
       return;
     }
 
-    // Group consecutive NSFW frames into scenes
     List<List<double>> sceneRanges = [];
     List<double> currentScene = [];
 
@@ -410,11 +386,9 @@ print("NSFW" if is_nsfw else "SAFE")
       if (currentScene.isEmpty) {
         currentScene.add(timestamp);
       } else {
-        // If frames are within 5 seconds, consider them same scene
         if (timestamp - currentScene.last <= 5) {
           currentScene.add(timestamp);
         } else {
-          // Start new scene
           sceneRanges.add([...currentScene]);
           currentScene = [timestamp];
         }
@@ -425,11 +399,10 @@ print("NSFW" if is_nsfw else "SAFE")
       sceneRanges.add(currentScene);
     }
 
-    // Convert scene ranges to skip timestamps
     Map<String, String> newSkips = {};
     for (var range in sceneRanges) {
       double start = range.first;
-      double end = range.last + 5; // Add buffer after scene
+      double end = range.last + 5;
 
       newSkips[formatTime(start)] = formatTime(end.clamp(0, totalDuration));
     }
@@ -458,18 +431,43 @@ print("NSFW" if is_nsfw else "SAFE")
       double skipFromSeconds = parseTimeToSeconds(skipFrom);
       double skipToSeconds = parseTimeToSeconds(skipTo);
 
-      // Check if current time matches skip point (within 0.5 second tolerance)
       if ((currentTime - skipFromSeconds).abs() < 0.5 &&
           currentTime < skipToSeconds) {
-        player.seek(Duration(milliseconds: (skipToSeconds * 1000).toInt()));
+        if (autoSkipEnabled) {
+          // Auto-skip the scene
+          player.seek(Duration(milliseconds: (skipToSeconds * 1000).toInt()));
 
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('Skipped NSFW scene from $skipFrom to $skipTo'),
-              duration: const Duration(seconds: 2),
-            ),
-          );
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(
+                  '⏭️ Skipped NSFW scene from $skipFrom to $skipTo',
+                ),
+                duration: const Duration(seconds: 2),
+                backgroundColor: Colors.green.shade700,
+              ),
+            );
+          }
+        } else {
+          // Just warn the user
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('⚠️ NSFW content detected at $skipFrom'),
+                duration: const Duration(seconds: 3),
+                backgroundColor: Colors.orange.shade700,
+                action: SnackBarAction(
+                  label: 'Skip',
+                  textColor: Colors.white,
+                  onPressed: () {
+                    player.seek(
+                      Duration(milliseconds: (skipToSeconds * 1000).toInt()),
+                    );
+                  },
+                ),
+              ),
+            );
+          }
         }
         break;
       }
@@ -490,6 +488,143 @@ print("NSFW" if is_nsfw else "SAFE")
     int minutes = (seconds / 60).floor();
     int secs = (seconds % 60).floor();
     return '${minutes.toString().padLeft(2, '0')}:${secs.toString().padLeft(2, '0')}';
+  }
+
+  String extractMovieName(String filePath) {
+    String filename = filePath.split('/').last.split('\\').last;
+    filename = filename.substring(0, filename.lastIndexOf('.'));
+
+    filename = filename
+        .replaceAll(RegExp(r'[\(\[]?\d{4}[\)\]]?'), '')
+        .replaceAll(
+          RegExp(
+            r'\b(720p|1080p|2160p|4K|HDR|BluRay|BRRip|WEBRip|WEB-DL|HDTV|DVDRip)\b',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .replaceAll(
+          RegExp(
+            r'\b(x264|x265|H264|H265|HEVC|AAC|AC3|DTS)\b',
+            caseSensitive: false,
+          ),
+          '',
+        )
+        .replaceAll(RegExp(r'\[.*?\]'), '')
+        .replaceAll(RegExp(r'\(.*?\)'), '')
+        .replaceAll(RegExp(r'[._-]+'), ' ')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+
+    return filename;
+  }
+
+  Future<void> openIMDBParentalGuide() async {
+    if (videoPath == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please load a video first')),
+      );
+      return;
+    }
+
+    String movieName = extractMovieName(videoPath!);
+
+    showDialog(
+      context: context,
+      builder: (context) {
+        TextEditingController nameController = TextEditingController(
+          text: movieName,
+        );
+
+        return AlertDialog(
+          title: const Text('Open IMDB Parental Guide'),
+          content: SizedBox(
+            width: 400,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Movie/Show Name:',
+                  style: TextStyle(fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                TextField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    hintText: 'Enter movie or show name',
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: const Text(
+                    'The name was automatically extracted from the filename. '
+                    'You can edit it if needed before searching.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () async {
+                Navigator.pop(context);
+                String searchQuery = nameController.text.trim();
+
+                if (searchQuery.isEmpty) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Please enter a movie name')),
+                  );
+                  return;
+                }
+
+                String encodedQuery = Uri.encodeComponent(searchQuery);
+                String imdbSearchUrl =
+                    'https://www.imdb.com/find/?q=$encodedQuery&s=tt&ttype=ft&ref_=fn_ft';
+
+                try {
+                  final Uri url = Uri.parse(imdbSearchUrl);
+                  if (await canLaunchUrl(url)) {
+                    await launchUrl(url, mode: LaunchMode.externalApplication);
+
+                    if (mounted) {
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text(
+                            'Opening IMDB... Click on the movie and navigate to Parental Guide',
+                          ),
+                          duration: Duration(seconds: 4),
+                        ),
+                      );
+                    }
+                  } else {
+                    throw 'Could not launch URL';
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Error opening IMDB: $e')),
+                    );
+                  }
+                }
+              },
+              child: const Text('Open IMDB'),
+            ),
+          ],
+        );
+      },
+    );
   }
 
   void stepBackward() {
@@ -519,14 +654,7 @@ print("NSFW" if is_nsfw else "SAFE")
       pickAndLoadVideo();
       return;
     }
-
     player.playOrPause();
-  }
-
-  void toggleFullscreen() {
-    setState(() {
-      isFullscreen = !isFullscreen;
-    });
   }
 
   void resetControlsTimer() {
@@ -618,6 +746,25 @@ print("NSFW" if is_nsfw else "SAFE")
         ),
         const PopupMenuDivider(),
         PopupMenuItem<String>(
+          value: 'skip_mode',
+          child: Row(
+            children: [
+              Icon(
+                autoSkipEnabled ? Icons.fast_forward : Icons.warning_amber,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Text(autoSkipEnabled ? 'Mode: Auto-Skip' : 'Mode: Warn Only'),
+            ],
+          ),
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              _showSkipModeDialog(context);
+            });
+          },
+        ),
+        const PopupMenuDivider(),
+        PopupMenuItem<String>(
           value: 'detector_settings',
           child: const Row(
             children: [
@@ -659,6 +806,22 @@ print("NSFW" if is_nsfw else "SAFE")
           onTap: () {
             Future.delayed(Duration.zero, () {
               exportSkipJSON();
+            });
+          },
+        ),
+        const PopupMenuDivider(),
+        PopupMenuItem<String>(
+          value: 'imdb_guide',
+          child: const Row(
+            children: [
+              Icon(Icons.info_outline, size: 20),
+              SizedBox(width: 8),
+              Text('IMDB Parental Guide'),
+            ],
+          ),
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              openIMDBParentalGuide();
             });
           },
         ),
@@ -710,6 +873,58 @@ print("NSFW" if is_nsfw else "SAFE")
           },
         ),
       ],
+    );
+  }
+
+  void _showSkipModeDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('NSFW Skip Mode'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            RadioListTile<bool>(
+              title: const Text('Auto-Skip'),
+              subtitle: const Text('Automatically skip NSFW scenes'),
+              value: true,
+              groupValue: autoSkipEnabled,
+              onChanged: (value) {
+                setState(() {
+                  autoSkipEnabled = value!;
+                });
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      value! ? '✅ Auto-skip enabled' : '⚠️ Warn mode enabled',
+                    ),
+                  ),
+                );
+              },
+            ),
+            RadioListTile<bool>(
+              title: const Text('Warn Only'),
+              subtitle: const Text('Show warning with manual skip option'),
+              value: false,
+              groupValue: autoSkipEnabled,
+              onChanged: (value) {
+                setState(() {
+                  autoSkipEnabled = value!;
+                });
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      value! ? '✅ Auto-skip enabled' : '⚠️ Warn mode enabled',
+                    ),
+                  ),
+                );
+              },
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -973,39 +1188,11 @@ print("NSFW" if is_nsfw else "SAFE")
 
   @override
   Widget build(BuildContext context) {
-    if (isFullscreen) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        body: _buildFullscreenPlayer(),
-      );
-    }
-
     return Scaffold(
-      appBar: AppBar(
-        title: const Text("PGPlayer - Desktop Video Player"),
-        backgroundColor: const Color.fromARGB(255, 82, 176, 132),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.folder_open),
-            onPressed: pickAndLoadVideo,
-            tooltip: 'Open Video',
-          ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () => _showDetectorSettingsDialog(context),
-            tooltip: 'Detection Settings',
-          ),
-          IconButton(
-            icon: const Icon(Icons.search),
-            onPressed: isInitialized ? scanVideoForNSFW : null,
-            tooltip: 'Scan for NSFW',
-          ),
-        ],
-      ),
       backgroundColor: Colors.black,
       body: Stack(
         children: [
-          _buildNormalPlayer(),
+          _buildPlayer(),
           if (isScanning)
             Container(
               color: Colors.black87,
@@ -1017,9 +1204,9 @@ print("NSFW" if is_nsfw else "SAFE")
                       color: Color.fromARGB(255, 82, 176, 132),
                     ),
                     const SizedBox(height: 20),
-                    Text(
+                    const Text(
                       'Scanning video for NSFW content...',
-                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                      style: TextStyle(color: Colors.white, fontSize: 16),
                     ),
                     const SizedBox(height: 10),
                     SizedBox(
@@ -1047,112 +1234,7 @@ print("NSFW" if is_nsfw else "SAFE")
     );
   }
 
-  Widget _buildNormalPlayer() {
-    return Column(
-      children: [
-        Expanded(
-          child: MouseRegion(
-            onHover: (_) => resetControlsTimer(),
-            child: GestureDetector(
-              onTap: togglePlayPause,
-              onSecondaryTapDown: (details) {
-                showContextMenu(context, details.globalPosition);
-              },
-              child: Stack(
-                children: [
-                  // Video area
-                  Container(
-                    color: Colors.black,
-                    child: Center(
-                      child: isInitialized
-                          ? SizedBox.expand(
-                              child: Video(
-                                controller: controller,
-                                controls: NoVideoControls,
-                                fit: BoxFit.contain,
-                              ),
-                            )
-                          : Column(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                const Icon(
-                                  Icons.movie,
-                                  size: 120,
-                                  color: Colors.white24,
-                                ),
-                                const SizedBox(height: 20),
-                                ElevatedButton.icon(
-                                  onPressed: pickAndLoadVideo,
-                                  icon: const Icon(Icons.folder_open),
-                                  label: const Text('Open Video File'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: const Color.fromARGB(
-                                      255,
-                                      82,
-                                      176,
-                                      132,
-                                    ),
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 24,
-                                      vertical: 12,
-                                    ),
-                                  ),
-                                ),
-                              ],
-                            ),
-                    ),
-                  ),
-                  // Skip indicator
-                  if (skipTimestamps.isNotEmpty && isInitialized)
-                    Positioned(
-                      top: 10,
-                      right: 10,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.black54,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Row(
-                          children: [
-                            const Icon(
-                              Icons.skip_next,
-                              size: 16,
-                              color: Colors.white,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              '${skipTimestamps.length} skips active',
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 12,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  // Controls overlay
-                  if ((showControls || !isPlaying) && isInitialized)
-                    Positioned(
-                      bottom: 0,
-                      left: 0,
-                      right: 0,
-                      child: _buildControls(),
-                    ),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildFullscreenPlayer() {
+  Widget _buildPlayer() {
     return MouseRegion(
       onHover: (_) => resetControlsTimer(),
       child: GestureDetector(
@@ -1173,9 +1255,106 @@ print("NSFW" if is_nsfw else "SAFE")
                           fit: BoxFit.contain,
                         ),
                       )
-                    : const Icon(Icons.movie, size: 200, color: Colors.white24),
+                    : Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(
+                            Icons.movie,
+                            size: 120,
+                            color: Colors.white24,
+                          ),
+                          const SizedBox(height: 20),
+                          ElevatedButton.icon(
+                            onPressed: pickAndLoadVideo,
+                            icon: const Icon(Icons.folder_open),
+                            label: const Text('Open Video File'),
+                            style: ElevatedButton.styleFrom(
+                              backgroundColor: const Color.fromARGB(
+                                255,
+                                82,
+                                176,
+                                132,
+                              ),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 24,
+                                vertical: 12,
+                              ),
+                            ),
+                          ),
+                          const SizedBox(height: 10),
+                          const Text(
+                            'Right-click for menu',
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
+                      ),
               ),
             ),
+            // Menu button overlay (top-right)
+            if (showControls && isInitialized)
+              Positioned(
+                top: 10,
+                right: 10,
+                child: IconButton(
+                  onPressed: () {
+                    final RenderBox renderBox =
+                        context.findRenderObject() as RenderBox;
+                    final size = renderBox.size;
+                    showContextMenu(context, Offset(size.width - 50, 50));
+                  },
+                  icon: Container(
+                    padding: const EdgeInsets.all(8),
+                    decoration: BoxDecoration(
+                      color: Colors.black54,
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: const Icon(
+                      Icons.more_vert,
+                      color: Colors.white,
+                      size: 24,
+                    ),
+                  ),
+                ),
+              ),
+            // Skip indicator
+            if (skipTimestamps.isNotEmpty && isInitialized && showControls)
+              Positioned(
+                top: 10,
+                left: 10,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black54,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        autoSkipEnabled
+                            ? Icons.fast_forward
+                            : Icons.warning_amber,
+                        size: 16,
+                        color: autoSkipEnabled ? Colors.green : Colors.orange,
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '${skipTimestamps.length} skip${skipTimestamps.length != 1 ? 's' : ''} (${autoSkipEnabled ? 'auto' : 'warn'})',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            // Controls overlay
             if ((showControls || !isPlaying) && isInitialized)
               Positioned(bottom: 0, left: 0, right: 0, child: _buildControls()),
           ],
@@ -1196,7 +1375,6 @@ print("NSFW" if is_nsfw else "SAFE")
       padding: const EdgeInsets.all(16),
       child: Column(
         children: [
-          // Progress bar
           Row(
             children: [
               Text(
@@ -1226,7 +1404,6 @@ print("NSFW" if is_nsfw else "SAFE")
             ],
           ),
           const SizedBox(height: 8),
-          // Control buttons
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
@@ -1262,18 +1439,10 @@ print("NSFW" if is_nsfw else "SAFE")
                   if (skipTimestamps.isNotEmpty)
                     IconButton(
                       onPressed: () => _showSkipsDialog(context),
-                      icon: const Icon(Icons.skip_next),
+                      icon: const Icon(Icons.list),
                       color: Colors.white,
                       tooltip: 'View skips',
                     ),
-                  IconButton(
-                    onPressed: toggleFullscreen,
-                    icon: Icon(
-                      isFullscreen ? Icons.fullscreen_exit : Icons.fullscreen,
-                    ),
-                    color: Colors.white,
-                    iconSize: 28,
-                  ),
                 ],
               ),
             ],

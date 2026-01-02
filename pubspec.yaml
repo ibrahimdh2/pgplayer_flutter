@@ -41,6 +41,8 @@ dependencies:
   http: ^1.1.0
   path_provider: ^2.1.1
   ffmpeg_kit_flutter: ^6.0.3
+  url_launcher: ^6.2.2
+  navigator: ^1.1.1
 
 dev_dependencies:
   flutter_test:
