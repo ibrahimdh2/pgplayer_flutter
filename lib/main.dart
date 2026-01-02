@@ -47,6 +47,11 @@ class _HomeState extends State<Home> {
   bool isScanning = false;
   double scanProgress = 0.0;
 
+  // Detection settings
+  String selectedDetector =
+      'nudenet'; // 'nudenet', 'nsfw_model', 'yahoo_open_nsfw'
+  double sensitivityThreshold = 0.6; // 0.0 to 1.0
+
   // Skip timestamps: Map of "start_time" -> "skip_to_time"
   Map<String, String> skipTimestamps = {};
 
@@ -245,64 +250,140 @@ class _HomeState extends State<Home> {
 
   Future<bool> analyzeFrameForNSFW(String framePath) async {
     try {
-      // Read the image file
       final imageFile = File(framePath);
       if (!await imageFile.exists()) return false;
 
-      // Get the current working directory to find the .venv
       final currentDir = Directory.current.path;
       final pythonPath = '$currentDir/.venv/bin/python3';
 
-      // Check if python exists in venv
-      if (!await File(pythonPath).exists()) {
-        print('Python not found in .venv, using system python');
-        // Fall back to system python
-        var result = await Process.run('python3', [
-          '-c',
-          '''
-import sys
-sys.path.insert(0, "$currentDir/.venv/lib/python3.10/site-packages")
+      String pythonScript = '';
+
+      // Choose detection model based on user selection
+      switch (selectedDetector) {
+        case 'nudenet':
+          pythonScript =
+              '''
 from nudenet import NudeDetector
 detector = NudeDetector()
 result = detector.detect("$framePath")
-# Check for NSFW labels
 nsfw_labels = ["FEMALE_GENITALIA_EXPOSED", "FEMALE_BREAST_EXPOSED", "MALE_GENITALIA_EXPOSED", 
                "ANUS_EXPOSED", "BUTTOCKS_EXPOSED"]
-is_nsfw = any(item["class"] in nsfw_labels and item["score"] > 0.6 for item in result)
+is_nsfw = any(item["class"] in nsfw_labels and item["score"] > $sensitivityThreshold for item in result)
 print("NSFW" if is_nsfw else "SAFE")
-''',
-        ]);
+''';
+          break;
 
-        if (result.exitCode == 0) {
-          String output = result.stdout.toString().trim();
-          return output.contains("NSFW");
-        } else {
-          print('Error running NudeNet: ${result.stderr}');
-          return false;
-        }
+        case 'nsfw_model':
+          pythonScript =
+              '''
+from nsfw_detector import predict
+import numpy as np
+predictions = predict.classify("$framePath")
+if "$framePath" in predictions:
+    scores = predictions["$framePath"]
+    # Check for explicit content (porn, hentai)
+    nsfw_score = scores.get("porn", 0) + scores.get("hentai", 0)
+    # Also consider sexy content based on sensitivity
+    if $sensitivityThreshold < 0.7:
+        nsfw_score += scores.get("sexy", 0) * 0.5
+    is_nsfw = nsfw_score > $sensitivityThreshold
+    print("NSFW" if is_nsfw else "SAFE")
+else:
+    print("SAFE")
+''';
+          break;
+
+        case 'yahoo_open_nsfw':
+          pythonScript =
+              '''
+import tensorflow as tf
+import numpy as np
+from PIL import Image
+
+# Load Yahoo Open NSFW model
+model = tf.keras.models.load_model("$currentDir/.venv/open_nsfw_model")
+
+# Preprocess image
+img = Image.open("$framePath").convert('RGB').resize((224, 224))
+img_array = np.array(img) / 255.0
+img_array = np.expand_dims(img_array, axis=0)
+
+# Predict
+prediction = model.predict(img_array)
+nsfw_score = prediction[0][1]  # NSFW probability
+
+is_nsfw = nsfw_score > $sensitivityThreshold
+print("NSFW" if is_nsfw else "SAFE")
+''';
+          break;
+
+        case 'clip_interrogator':
+          pythonScript =
+              '''
+import torch
+from transformers import CLIPProcessor, CLIPModel
+from PIL import Image
+
+# Load CLIP model
+model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+
+# Load and process image
+image = Image.open("$framePath")
+inputs = processor(images=image, return_tensors="pt")
+
+# Define NSFW prompts
+nsfw_prompts = [
+    "explicit nudity", "naked person", "sexual content", 
+    "pornographic image", "intimate body parts",
+    "suggestive pose", "revealing clothing"
+]
+safe_prompts = ["normal clothed person", "safe content", "appropriate image"]
+
+# Get text embeddings
+text_inputs = processor(text=nsfw_prompts + safe_prompts, return_tensors="pt", padding=True)
+
+# Calculate similarities
+with torch.no_grad():
+    image_features = model.get_image_features(**inputs)
+    text_features = model.get_text_features(**text_inputs)
+    
+    # Normalize features
+    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+    
+    # Calculate similarity
+    similarities = (image_features @ text_features.T).squeeze()
+
+# Check if NSFW prompts have higher similarity
+nsfw_sim = similarities[:len(nsfw_prompts)].max().item()
+safe_sim = similarities[len(nsfw_prompts):].max().item()
+
+is_nsfw = nsfw_sim > safe_sim and nsfw_sim > $sensitivityThreshold
+print("NSFW" if is_nsfw else "SAFE")
+''';
+          break;
       }
 
-      // Use the venv python
-      var result = await Process.run(pythonPath, [
-        '-c',
-        '''
-from nudenet import NudeDetector
-detector = NudeDetector()
-result = detector.detect("$framePath")
-# Check for NSFW labels with high confidence
-nsfw_labels = ["FEMALE_GENITALIA_EXPOSED", "FEMALE_BREAST_EXPOSED", "MALE_GENITALIA_EXPOSED", 
-               "ANUS_EXPOSED", "BUTTOCKS_EXPOSED"]
-is_nsfw = any(item["class"] in nsfw_labels and item["score"] > 0.6 for item in result)
-print("NSFW" if is_nsfw else "SAFE")
-''',
-      ]);
+      // Try venv python first
+      ProcessResult result;
+      if (await File(pythonPath).exists()) {
+        result = await Process.run(pythonPath, ['-c', pythonScript]);
+      } else {
+        // Fallback to system python with venv packages in path
+        result = await Process.run('python3', [
+          '-c',
+          'import sys; sys.path.insert(0, "$currentDir/.venv/lib/python3.10/site-packages"); ' +
+              pythonScript,
+        ]);
+      }
 
       if (result.exitCode == 0) {
         String output = result.stdout.toString().trim();
-        print('NudeNet result for frame: $output');
+        print('${selectedDetector.toUpperCase()} result: $output');
         return output.contains("NSFW");
       } else {
-        print('Error running NudeNet: ${result.stderr}');
+        print('Error running detector: ${result.stderr}');
         return false;
       }
     } catch (e) {
@@ -537,6 +618,21 @@ print("NSFW" if is_nsfw else "SAFE")
         ),
         const PopupMenuDivider(),
         PopupMenuItem<String>(
+          value: 'detector_settings',
+          child: const Row(
+            children: [
+              Icon(Icons.settings, size: 20),
+              SizedBox(width: 8),
+              Text('Detection Settings'),
+            ],
+          ),
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              _showDetectorSettingsDialog(context);
+            });
+          },
+        ),
+        PopupMenuItem<String>(
           value: 'scan_nsfw',
           child: const Row(
             children: [
@@ -614,6 +710,135 @@ print("NSFW" if is_nsfw else "SAFE")
           },
         ),
       ],
+    );
+  }
+
+  void _showDetectorSettingsDialog(BuildContext context) {
+    String tempDetector = selectedDetector;
+    double tempSensitivity = sensitivityThreshold;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('NSFW Detection Settings'),
+          content: SizedBox(
+            width: 400,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Detection Model:',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                const SizedBox(height: 10),
+                RadioListTile<String>(
+                  title: const Text('NudeNet'),
+                  subtitle: const Text('Fast, detects explicit nudity'),
+                  value: 'nudenet',
+                  groupValue: tempDetector,
+                  onChanged: (value) {
+                    setDialogState(() {
+                      tempDetector = value!;
+                    });
+                  },
+                ),
+                RadioListTile<String>(
+                  title: const Text('NSFW Detector'),
+                  subtitle: const Text('Balanced, detects porn/hentai/sexy'),
+                  value: 'nsfw_model',
+                  groupValue: tempDetector,
+                  onChanged: (value) {
+                    setDialogState(() {
+                      tempDetector = value!;
+                    });
+                  },
+                ),
+                RadioListTile<String>(
+                  title: const Text('CLIP Interrogator'),
+                  subtitle: const Text(
+                    'Most sensitive, catches subtle content',
+                  ),
+                  value: 'clip_interrogator',
+                  groupValue: tempDetector,
+                  onChanged: (value) {
+                    setDialogState(() {
+                      tempDetector = value!;
+                    });
+                  },
+                ),
+                const SizedBox(height: 20),
+                const Text(
+                  'Sensitivity Threshold:',
+                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    const Text('Low'),
+                    Expanded(
+                      child: Slider(
+                        value: tempSensitivity,
+                        min: 0.3,
+                        max: 0.9,
+                        divisions: 12,
+                        label: tempSensitivity.toStringAsFixed(2),
+                        onChanged: (value) {
+                          setDialogState(() {
+                            tempSensitivity = value;
+                          });
+                        },
+                      ),
+                    ),
+                    const Text('High'),
+                  ],
+                ),
+                Text(
+                  'Current: ${tempSensitivity.toStringAsFixed(2)}',
+                  style: const TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+                const SizedBox(height: 10),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade50,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Text(
+                    'Lower threshold = More sensitive (catches minor scenes)\n'
+                    'Higher threshold = Less sensitive (only explicit scenes)',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  selectedDetector = tempDetector;
+                  sensitivityThreshold = tempSensitivity;
+                });
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'Using ${tempDetector.toUpperCase()} with sensitivity ${tempSensitivity.toStringAsFixed(2)}',
+                    ),
+                  ),
+                );
+              },
+              child: const Text('Apply'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -764,6 +989,11 @@ print("NSFW" if is_nsfw else "SAFE")
             icon: const Icon(Icons.folder_open),
             onPressed: pickAndLoadVideo,
             tooltip: 'Open Video',
+          ),
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: () => _showDetectorSettingsDialog(context),
+            tooltip: 'Detection Settings',
           ),
           IconButton(
             icon: const Icon(Icons.search),
