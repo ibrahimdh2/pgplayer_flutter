@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:path_provider/path_provider.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -42,9 +44,14 @@ class _HomeState extends State<Home> {
   Timer? skipCheckTimer;
   String? videoPath;
   bool isInitialized = false;
+  bool isScanning = false;
+  double scanProgress = 0.0;
 
   // Skip timestamps: Map of "start_time" -> "skip_to_time"
-  Map<String, String> skipTimestamps = {"0:05": "0:15", "0:30": "0:45"};
+  Map<String, String> skipTimestamps = {};
+
+  // Detected NSFW scenes
+  List<Map<String, dynamic>> detectedScenes = [];
 
   @override
   void initState() {
@@ -137,6 +144,220 @@ class _HomeState extends State<Home> {
     }
   }
 
+  Future<void> scanVideoForNSFW() async {
+    if (videoPath == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please load a video first')),
+      );
+      return;
+    }
+
+    setState(() {
+      isScanning = true;
+      scanProgress = 0.0;
+      detectedScenes = [];
+    });
+
+    try {
+      // Extract frames from video at intervals (every 2 seconds)
+      final tempDir = await getTemporaryDirectory();
+      final framesDir = Directory('${tempDir.path}/frames');
+      if (await framesDir.exists()) {
+        await framesDir.delete(recursive: true);
+      }
+      await framesDir.create();
+
+      // Calculate total frames to extract
+      int intervalSeconds = 2;
+      int totalFrames = (totalDuration / intervalSeconds).ceil();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Scanning video... This may take a while')),
+      );
+
+      // Extract frames using ffmpeg command line
+      for (int i = 0; i < totalFrames; i++) {
+        double timestamp = i * intervalSeconds.toDouble();
+        String framePath =
+            '${framesDir.path}/frame_${i}_${timestamp.toStringAsFixed(0)}.jpg';
+
+        // Use Process.run instead of FFmpegKit
+        var result = await Process.run('ffmpeg', [
+          '-ss',
+          timestamp.toString(),
+          '-i',
+          videoPath!,
+          '-vframes',
+          '1',
+          '-q:v',
+          '2',
+          framePath,
+        ]);
+
+        if (result.exitCode == 0) {
+          // Analyze frame for NSFW content
+          bool isNSFW = await analyzeFrameForNSFW(framePath);
+
+          if (isNSFW) {
+            // Mark this scene as NSFW
+            detectedScenes.add({
+              'timestamp': timestamp,
+              'frame': i,
+              'path': framePath,
+            });
+          }
+        }
+
+        setState(() {
+          scanProgress = (i + 1) / totalFrames;
+        });
+      }
+
+      // Generate skip timestamps from detected scenes
+      generateSkipTimestamps();
+
+      setState(() {
+        isScanning = false;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Scan complete! Found ${detectedScenes.length} NSFW scenes',
+            ),
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      }
+    } catch (e) {
+      setState(() {
+        isScanning = false;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error scanning video: $e')));
+      }
+    }
+  }
+
+  Future<bool> analyzeFrameForNSFW(String framePath) async {
+    try {
+      // Read the image file
+      final imageFile = File(framePath);
+      if (!await imageFile.exists()) return false;
+
+      // Get the current working directory to find the .venv
+      final currentDir = Directory.current.path;
+      final pythonPath = '$currentDir/.venv/bin/python3';
+
+      // Check if python exists in venv
+      if (!await File(pythonPath).exists()) {
+        print('Python not found in .venv, using system python');
+        // Fall back to system python
+        var result = await Process.run('python3', [
+          '-c',
+          '''
+import sys
+sys.path.insert(0, "$currentDir/.venv/lib/python3.10/site-packages")
+from nudenet import NudeDetector
+detector = NudeDetector()
+result = detector.detect("$framePath")
+# Check for NSFW labels
+nsfw_labels = ["FEMALE_GENITALIA_EXPOSED", "FEMALE_BREAST_EXPOSED", "MALE_GENITALIA_EXPOSED", 
+               "ANUS_EXPOSED", "BUTTOCKS_EXPOSED"]
+is_nsfw = any(item["class"] in nsfw_labels and item["score"] > 0.6 for item in result)
+print("NSFW" if is_nsfw else "SAFE")
+''',
+        ]);
+
+        if (result.exitCode == 0) {
+          String output = result.stdout.toString().trim();
+          return output.contains("NSFW");
+        } else {
+          print('Error running NudeNet: ${result.stderr}');
+          return false;
+        }
+      }
+
+      // Use the venv python
+      var result = await Process.run(pythonPath, [
+        '-c',
+        '''
+from nudenet import NudeDetector
+detector = NudeDetector()
+result = detector.detect("$framePath")
+# Check for NSFW labels with high confidence
+nsfw_labels = ["FEMALE_GENITALIA_EXPOSED", "FEMALE_BREAST_EXPOSED", "MALE_GENITALIA_EXPOSED", 
+               "ANUS_EXPOSED", "BUTTOCKS_EXPOSED"]
+is_nsfw = any(item["class"] in nsfw_labels and item["score"] > 0.6 for item in result)
+print("NSFW" if is_nsfw else "SAFE")
+''',
+      ]);
+
+      if (result.exitCode == 0) {
+        String output = result.stdout.toString().trim();
+        print('NudeNet result for frame: $output');
+        return output.contains("NSFW");
+      } else {
+        print('Error running NudeNet: ${result.stderr}');
+        return false;
+      }
+    } catch (e) {
+      print('Error analyzing frame: $e');
+      return false;
+    }
+  }
+
+  void generateSkipTimestamps() {
+    if (detectedScenes.isEmpty) {
+      setState(() {
+        skipTimestamps = {};
+      });
+      return;
+    }
+
+    // Group consecutive NSFW frames into scenes
+    List<List<double>> sceneRanges = [];
+    List<double> currentScene = [];
+
+    for (var scene in detectedScenes) {
+      double timestamp = scene['timestamp'];
+
+      if (currentScene.isEmpty) {
+        currentScene.add(timestamp);
+      } else {
+        // If frames are within 5 seconds, consider them same scene
+        if (timestamp - currentScene.last <= 5) {
+          currentScene.add(timestamp);
+        } else {
+          // Start new scene
+          sceneRanges.add([...currentScene]);
+          currentScene = [timestamp];
+        }
+      }
+    }
+
+    if (currentScene.isNotEmpty) {
+      sceneRanges.add(currentScene);
+    }
+
+    // Convert scene ranges to skip timestamps
+    Map<String, String> newSkips = {};
+    for (var range in sceneRanges) {
+      double start = range.first;
+      double end = range.last + 5; // Add buffer after scene
+
+      newSkips[formatTime(start)] = formatTime(end.clamp(0, totalDuration));
+    }
+
+    setState(() {
+      skipTimestamps = newSkips;
+    });
+  }
+
   void startSkipCheckTimer() {
     skipCheckTimer?.cancel();
     skipCheckTimer = Timer.periodic(const Duration(milliseconds: 200), (timer) {
@@ -164,7 +385,7 @@ class _HomeState extends State<Home> {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(
-              content: Text('Skipped from $skipFrom to $skipTo'),
+              content: Text('Skipped NSFW scene from $skipFrom to $skipTo'),
               duration: const Duration(seconds: 2),
             ),
           );
@@ -243,6 +464,51 @@ class _HomeState extends State<Home> {
     }
   }
 
+  void exportSkipJSON() {
+    if (skipTimestamps.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No skip timestamps to export')),
+      );
+      return;
+    }
+
+    String jsonString = const JsonEncoder.withIndent(
+      '  ',
+    ).convert(skipTimestamps);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Skip Timestamps JSON'),
+        content: SizedBox(
+          width: 400,
+          height: 300,
+          child: SingleChildScrollView(
+            child: SelectableText(
+              jsonString,
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: jsonString));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Copied to clipboard!')),
+              );
+            },
+            child: const Text('Copy'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
   void showContextMenu(BuildContext context, Offset position) {
     final RenderBox overlay =
         Overlay.of(context).context.findRenderObject() as RenderBox;
@@ -266,6 +532,37 @@ class _HomeState extends State<Home> {
           onTap: () {
             Future.delayed(Duration.zero, () {
               pickAndLoadVideo();
+            });
+          },
+        ),
+        const PopupMenuDivider(),
+        PopupMenuItem<String>(
+          value: 'scan_nsfw',
+          child: const Row(
+            children: [
+              Icon(Icons.search, size: 20),
+              SizedBox(width: 8),
+              Text('Scan for NSFW Scenes'),
+            ],
+          ),
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              scanVideoForNSFW();
+            });
+          },
+        ),
+        PopupMenuItem<String>(
+          value: 'export_json',
+          child: const Row(
+            children: [
+              Icon(Icons.download, size: 20),
+              SizedBox(width: 8),
+              Text('Export Skip JSON'),
+            ],
+          ),
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              exportSkipJSON();
             });
           },
         ),
@@ -468,10 +765,55 @@ class _HomeState extends State<Home> {
             onPressed: pickAndLoadVideo,
             tooltip: 'Open Video',
           ),
+          IconButton(
+            icon: const Icon(Icons.search),
+            onPressed: isInitialized ? scanVideoForNSFW : null,
+            tooltip: 'Scan for NSFW',
+          ),
         ],
       ),
       backgroundColor: Colors.black,
-      body: _buildNormalPlayer(),
+      body: Stack(
+        children: [
+          _buildNormalPlayer(),
+          if (isScanning)
+            Container(
+              color: Colors.black87,
+              child: Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(
+                      color: Color.fromARGB(255, 82, 176, 132),
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      'Scanning video for NSFW content...',
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                    ),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: 300,
+                      child: LinearProgressIndicator(
+                        value: scanProgress,
+                        backgroundColor: Colors.grey[700],
+                        color: const Color.fromARGB(255, 82, 176, 132),
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      '${(scanProgress * 100).toStringAsFixed(0)}%',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 14,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
     );
   }
 
