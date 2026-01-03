@@ -15,59 +15,8 @@ void main() async {
   MediaKit.ensureInitialized();
 
   // Extract bundled assets on first run
-  await extractBundledAssets();
 
   runApp(const MyApp());
-}
-
-/// Extracts detector.exe and ffmpeg folder from assets to project root
-Future<void> extractBundledAssets() async {
-  try {
-    final executableDir = File(Platform.resolvedExecutable).parent.path;
-
-    // Check if already extracted (marker file approach)
-    final markerFile = File(path.join(executableDir, '.assets_extracted'));
-    if (await markerFile.exists()) {
-      print('Assets already extracted, skipping...');
-      return;
-    }
-
-    print('First run detected - extracting bundled assets...');
-
-    // Extract detector.exe
-    await _extractFile(
-      assetPath: 'assets/detector.exe',
-      targetPath: path.join(executableDir, 'detector.exe'),
-    );
-
-    // Extract ffmpeg folder structure
-    // You'll need to list all ffmpeg files in your assets
-    final ffmpegFiles = [
-      'ffmpeg/bin/ffmpeg.exe',
-      'ffmpeg/bin/ffprobe.exe',
-      'ffmpeg/presets/libvpx-360p.ffpreset',
-      'ffmpeg/presets/libvpx-720p.ffpreset',
-      'ffmpeg/presets/libvpx-720p50_60.ffpreset',
-      'ffmpeg/presets/libvpx-1080p.ffpreset',
-      'ffmpeg/presets/libvpx-1080p50_60.ffpreset',
-    ];
-
-    for (final file in ffmpegFiles) {
-      await _extractFile(
-        assetPath: 'assets/$file',
-        targetPath: path.join(executableDir, file),
-      );
-    }
-
-    // Create marker file to indicate extraction is complete
-    await markerFile.create();
-    await markerFile.writeAsString('extracted');
-
-    print('Asset extraction complete!');
-  } catch (e) {
-    print('Error extracting assets: $e');
-    // Don't throw - let app continue even if extraction fails
-  }
 }
 
 /// Helper function to extract a single file from assets
@@ -306,9 +255,9 @@ class _HomeState extends State<Home> {
       final executableDir = File(Platform.resolvedExecutable).parent.path;
       final ffmpegPath = path.join(
         executableDir,
-        'ffmpeg',
+        'data/flutter_assets/assets/ffmpeg',
         'bin',
-        'ffmpeg.exe',
+        'ffmpeg',
       );
 
       // Step 1: Extract all frames first
@@ -405,7 +354,11 @@ class _HomeState extends State<Home> {
   ) async {
     // Use extracted detector.exe from project root
     final executableDir = File(Platform.resolvedExecutable).parent.path;
-    final pythonExePath = path.join(executableDir, 'detector.exe');
+    final pythonExePath = path.join(
+      executableDir,
+      'data/flutter_assets/assets/',
+      'detector',
+    );
 
     final inputJsonPath = '$framesDir/input.json';
     final resultPath = '$framesDir/results.json';

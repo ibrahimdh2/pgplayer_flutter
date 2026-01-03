@@ -30,29 +30,29 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    - assets/detector.exe
+    - assets/detector
     - assets/icon.png
     - assets/ffmpeg/
     - assets/ffmpeg/bin/
-    - assets/ffmpeg/bin/ffmpeg.exe
-    - assets/ffmpeg/bin/ffplay.exe
-    - assets/ffmpeg/bin/ffprobe.exe
+    - assets/ffmpeg/bin/ffmpeg
+    - assets/ffmpeg/bin/ffplay
+    - assets/ffmpeg/bin/ffprobe
     - assets/ffmpeg/presets/libvpx-360p.ffpreset
     - assets/ffmpeg/presets/libvpx-720p.ffpreset
     - assets/ffmpeg/presets/libvpx-720p50_60.ffpreset
     - assets/ffmpeg/presets/libvpx-1080p.ffpreset
     - assets/ffmpeg/presets/libvpx-1080p50_60.ffpreset
 
-msix_config:
-  display_name: PG Player
-  publisher_display_name: Eclectisoft
+# msix_config:
+#   display_name: PG Player
+#   publisher_display_name: Eclectisoft
 
-  identity_name: Eclectisoft.PGPlayer
-  publisher: CN=0D201C07-2EE2-4B88-BEE4-41AEC65BE3EC
+#   identity_name: Eclectisoft.PGPlayer
+#   publisher: CN=0D201C07-2EE2-4B88-BEE4-41AEC65BE3EC
 
-  msix_version: 1.0.0.0
-  store: true
+#   msix_version: 1.0.0.0
+#   store: true
 
-  capabilities: internetClient
-  logo_path: assets/icon.png
+#   capabilities: internetClient
+#   logo_path: assets/icon.png
 

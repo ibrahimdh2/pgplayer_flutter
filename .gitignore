@@ -50,3 +50,5 @@ ffmpeg/bin/ffmpeg.exe
 ffmpeg/bin/ffplay.exe
 ffmpeg/bin/ffprobe.exe
 /assets/ffmpeg
+ffmpeg/bin/ffmpeg
+/ffmpeg
