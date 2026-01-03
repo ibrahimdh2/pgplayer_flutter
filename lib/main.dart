@@ -231,7 +231,7 @@ class _HomeState extends State<Home> {
             '${framesDir.path}/frame_${i}_${timestamp.toStringAsFixed(0)}.jpg';
         frameTasks.add({'index': i, 'timestamp': timestamp, 'path': framePath});
 
-        await Process.run('ffmpeg', [
+        await Process.run('./ffmpeg/bin/ffmpeg.exe', [
           '-ss',
           timestamp.toString(),
           '-i',
@@ -316,7 +316,7 @@ class _HomeState extends State<Home> {
     String framesDir,
   ) async {
     final currentDir = Directory.current.path;
-    final pythonPath = '$currentDir/.venv/bin/python3';
+    final pythonPath = '$currentDir/.venv/Scripts/python.exe';
 
     // Create a temporary Python script for batch processing
     final scriptPath = '$framesDir/batch_analyzer.py';
@@ -540,7 +540,7 @@ $detectorCode
 
 def update_progress(completed):
     try:
-        with open('$progressPath', 'w') as f:
+        with open(${pyPath(progressPath)}, 'w') as f:
             f.write(str(completed))
     except:
         pass
@@ -585,7 +585,7 @@ if __name__ == '__main__':
         results = async_results.get()
     
     # Write results
-    with open('$resultPath', 'w') as f:
+    with open(${pyPath(resultPath)}, 'w') as f:
         json.dump(results, f)
     
     update_progress(len(frames))
@@ -1958,4 +1958,8 @@ class EnhancedSkipMarkerPainter extends CustomPainter {
         oldDelegate.totalDuration != totalDuration ||
         oldDelegate.currentTime != currentTime;
   }
+}
+
+String pyPath(String path) {
+  return "r'''${path.replaceAll("'''", "")}'''";
 }
