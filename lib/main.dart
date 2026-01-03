@@ -758,7 +758,7 @@ if __name__ == '__main__':
         );
 
         return AlertDialog(
-          title: const Text('Open IMDB Parental Guide'),
+          title: const Text('Search Movie Parents Guide'),
           content: SizedBox(
             width: 400,
             child: Column(
@@ -810,12 +810,12 @@ if __name__ == '__main__':
                   return;
                 }
 
-                String encodedQuery = Uri.encodeComponent(searchQuery);
-                String imdbSearchUrl =
-                    'https://www.imdb.com/find/?q=$encodedQuery&s=tt&ttype=ft&ref_=fn_ft';
+                // Create Google search URL for parents guide
+                String googleSearchUrl =
+                    'https://www.google.com/search?q=${Uri.encodeComponent('$searchQuery Parents Guide')}';
 
                 try {
-                  final Uri url = Uri.parse(imdbSearchUrl);
+                  final Uri url = Uri.parse(googleSearchUrl);
                   if (await canLaunchUrl(url)) {
                     await launchUrl(url, mode: LaunchMode.externalApplication);
 
@@ -823,9 +823,9 @@ if __name__ == '__main__':
                       ScaffoldMessenger.of(context).showSnackBar(
                         const SnackBar(
                           content: Text(
-                            'Opening IMDB... Click on the movie and navigate to Parental Guide',
+                            'Searching Google for Parents Guide...',
                           ),
-                          duration: Duration(seconds: 4),
+                          duration: Duration(seconds: 3),
                         ),
                       );
                     }
@@ -835,12 +835,12 @@ if __name__ == '__main__':
                 } catch (e) {
                   if (mounted) {
                     ScaffoldMessenger.of(context).showSnackBar(
-                      SnackBar(content: Text('Error opening IMDB: $e')),
+                      SnackBar(content: Text('Error opening Google: $e')),
                     );
                   }
                 }
               },
-              child: const Text('Open IMDB'),
+              child: const Text('Search Google'),
             ),
           ],
         );
@@ -963,6 +963,34 @@ if __name__ == '__main__':
               );
             },
             child: const Text('Copy'),
+          ),
+          TextButton(
+            onPressed: () async {
+              try {
+                String? outputPath = await FilePicker.platform.saveFile(
+                  dialogTitle: 'Save Skip Timestamps',
+                  fileName: 'skip_timestamps.json',
+                  type: FileType.custom,
+                  allowedExtensions: ['json'],
+                );
+
+                if (outputPath != null) {
+                  await File(outputPath).writeAsString(jsonString);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('File saved successfully!')),
+                    );
+                  }
+                }
+              } catch (e) {
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Error saving file: $e')),
+                  );
+                }
+              }
+            },
+            child: const Text('Save to File'),
           ),
           TextButton(
             onPressed: () => Navigator.pop(context),
@@ -1367,6 +1395,37 @@ if __name__ == '__main__':
                   hintText: 'Enter JSON here',
                 ),
               ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  ElevatedButton.icon(
+                    onPressed: () async {
+                      try {
+                        FilePickerResult? result = await FilePicker.platform
+                            .pickFiles(
+                              type: FileType.custom,
+                              allowedExtensions: ['json'],
+                              dialogTitle: 'Select Skip Timestamps JSON',
+                            );
+
+                        if (result != null &&
+                            result.files.single.path != null) {
+                          String path = result.files.single.path!;
+                          String content = await File(path).readAsString();
+                          controller.text = content;
+                        }
+                      } catch (e) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(content: Text('Error loading file: $e')),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.folder_open, size: 18),
+                    label: const Text('Load from File'),
+                  ),
+                ],
+              ),
             ],
           ),
         ),
@@ -1394,7 +1453,7 @@ if __name__ == '__main__':
                 ).showSnackBar(SnackBar(content: Text('Invalid JSON: $e')));
               }
             },
-            child: const Text('Load'),
+            child: const Text('Apply'),
           ),
         ],
       ),
@@ -1578,13 +1637,13 @@ if __name__ == '__main__':
   }
 
   Widget _buildPlayer() {
-    return MouseRegion(
-      onHover: (_) => _onMouseMove(),
-      child: GestureDetector(
-        onTap: togglePlayPause,
-        onSecondaryTapDown: (details) {
-          showContextMenu(context, details.globalPosition);
-        },
+    return GestureDetector(
+      onTap: togglePlayPause,
+      onSecondaryTapDown: (details) {
+        showContextMenu(context, details.globalPosition);
+      },
+      child: MouseRegion(
+        onHover: (_) => _onMouseMove(),
         child: Stack(
           children: [
             Container(
