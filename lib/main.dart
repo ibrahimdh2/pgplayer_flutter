@@ -53,13 +53,15 @@ class _HomeState extends State<Home> {
   bool hardwareAcceleration = false;
 
   String selectedDetector = 'nudenet';
-  double sensitivityThreshold = 0.5;
+  double sensitivityThreshold = 0.6;
   bool autoSkipEnabled = true;
   bool _isHovering = false;
+  int parallelThreads = 4;
 
   Map<String, String> skipTimestamps = {};
   List<Map<String, dynamic>> detectedScenes = [];
   DateTime? scanStartTime;
+  Timer? progressUpdateTimer;
 
   @override
   void initState() {
@@ -132,6 +134,7 @@ class _HomeState extends State<Home> {
   void dispose() {
     hideControlsTimer?.cancel();
     skipCheckTimer?.cancel();
+    progressUpdateTimer?.cancel();
     player.dispose();
     super.dispose();
   }
@@ -179,6 +182,7 @@ class _HomeState extends State<Home> {
     }
   }
 
+  // Multi-threaded video scanning with Python multiprocessing
   Future<void> scanVideoForNSFW() async {
     if (videoPath == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -212,17 +216,22 @@ class _HomeState extends State<Home> {
       });
 
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Scanning video... This may take a while'),
+        SnackBar(
+          content: Text(
+            'Extracting frames and scanning with $parallelThreads threads...',
+          ),
         ),
       );
 
+      // Step 1: Extract all frames first
+      List<Map<String, dynamic>> frameTasks = [];
       for (int i = 0; i < totalFrames; i++) {
         double timestamp = i * intervalSeconds.toDouble();
         String framePath =
             '${framesDir.path}/frame_${i}_${timestamp.toStringAsFixed(0)}.jpg';
+        frameTasks.add({'index': i, 'timestamp': timestamp, 'path': framePath});
 
-        var result = await Process.run('ffmpeg', [
+        await Process.run('ffmpeg', [
           '-ss',
           timestamp.toString(),
           '-i',
@@ -234,27 +243,43 @@ class _HomeState extends State<Home> {
           framePath,
         ]);
 
-        if (result.exitCode == 0) {
-          bool isNSFW = await analyzeFrameForNSFW(framePath);
-
-          if (isNSFW) {
-            detectedScenes.add({
-              'timestamp': timestamp,
-              'frame': i,
-              'path': framePath,
-            });
-            setState(() {
-              detectedScenesCount++;
-            });
-          }
-        }
-
         setState(() {
           currentFrameNumber = i + 1;
-          currentScanTimestamp = timestamp;
-          scanProgress = (i + 1) / totalFrames;
+          scanProgress =
+              (i + 1) / (totalFrames * 2); // First half is extraction
         });
       }
+
+      // Step 2: Process all frames with Python multiprocessing
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Frame extraction complete. Now analyzing with AI ($parallelThreads threads)...',
+          ),
+          duration: const Duration(seconds: 2),
+        ),
+      );
+
+      List<Map<String, dynamic>> results = await _analyzeBatchWithPython(
+        frameTasks,
+        framesDir.path,
+      );
+
+      // Collect NSFW scenes
+      for (var result in results) {
+        if (result['isNSFW'] == true) {
+          detectedScenes.add({
+            'timestamp': result['timestamp'],
+            'frame': result['index'],
+            'path': result['path'],
+          });
+        }
+      }
+
+      setState(() {
+        detectedScenesCount = detectedScenes.length;
+        scanProgress = 1.0;
+      });
 
       generateSkipTimestamps();
 
@@ -285,81 +310,183 @@ class _HomeState extends State<Home> {
     }
   }
 
-  Future<bool> analyzeFrameForNSFW(String framePath) async {
-    try {
-      final imageFile = File(framePath);
-      if (!await imageFile.exists()) return false;
+  // Use Python multiprocessing for true parallel AI detection
+  Future<List<Map<String, dynamic>>> _analyzeBatchWithPython(
+    List<Map<String, dynamic>> frameTasks,
+    String framesDir,
+  ) async {
+    final currentDir = Directory.current.path;
+    final pythonPath = '$currentDir/.venv/bin/python3';
 
-      final currentDir = Directory.current.path;
-      final pythonPath = '$currentDir/.venv/bin/python3';
+    // Create a temporary Python script for batch processing
+    final scriptPath = '$framesDir/batch_analyzer.py';
+    final resultPath = '$framesDir/results.json';
+    final progressPath = '$framesDir/progress.txt';
 
-      String pythonScript = '';
+    // Inverted threshold for correct sensitivity
+    double actualThreshold = 1.0 - sensitivityThreshold;
 
-      switch (selectedDetector) {
-        case 'nudenet':
-          pythonScript =
-              '''
+    String pythonScript = _generateBatchPythonScript(
+      frameTasks,
+      selectedDetector,
+      actualThreshold,
+      parallelThreads,
+      resultPath,
+      progressPath,
+    );
+
+    await File(scriptPath).writeAsString(pythonScript);
+
+    // Start progress monitoring
+    _startProgressMonitoring(progressPath, frameTasks.length);
+
+    // Run the Python script
+    ProcessResult result;
+    if (await File(pythonPath).exists()) {
+      result = await Process.run(pythonPath, [scriptPath]);
+    } else {
+      result = await Process.run('python3', [scriptPath]);
+    }
+
+    // Stop progress monitoring
+    progressUpdateTimer?.cancel();
+
+    if (result.exitCode != 0) {
+      throw Exception('Python script failed: ${result.stderr}');
+    }
+
+    // Read results
+    final resultsFile = File(resultPath);
+    if (!await resultsFile.exists()) {
+      throw Exception('Results file not found');
+    }
+
+    String jsonContent = await resultsFile.readAsString();
+    List<dynamic> jsonResults = jsonDecode(jsonContent);
+
+    return jsonResults.map((item) => Map<String, dynamic>.from(item)).toList();
+  }
+
+  void _startProgressMonitoring(String progressPath, int totalFrames) {
+    progressUpdateTimer?.cancel();
+    progressUpdateTimer = Timer.periodic(const Duration(milliseconds: 500), (
+      timer,
+    ) async {
+      try {
+        final progressFile = File(progressPath);
+        if (await progressFile.exists()) {
+          String content = await progressFile.readAsString();
+          int processed = int.tryParse(content.trim()) ?? 0;
+
+          if (mounted) {
+            setState(() {
+              currentFrameNumber = processed;
+              // Second half of progress is analysis
+              scanProgress = 0.5 + (processed / totalFrames * 0.5);
+            });
+          }
+        }
+      } catch (e) {
+        // Ignore errors during progress reading
+      }
+    });
+  }
+
+  String _generateBatchPythonScript(
+    List<Map<String, dynamic>> frameTasks,
+    String detector,
+    double threshold,
+    int numThreads,
+    String resultPath,
+    String progressPath,
+  ) {
+    // Create frame list as JSON
+    String frameListJson = jsonEncode(
+      frameTasks
+          .map(
+            (t) => {
+              'index': t['index'],
+              'timestamp': t['timestamp'],
+              'path': t['path'],
+            },
+          )
+          .toList(),
+    );
+
+    String detectorCode = '';
+
+    switch (detector) {
+      case 'nudenet':
+        detectorCode =
+            '''
 from nudenet import NudeDetector
 detector = NudeDetector()
-result = detector.detect("$framePath")
-nsfw_labels = ["FEMALE_GENITALIA_EXPOSED", "FEMALE_BREAST_EXPOSED", "MALE_GENITALIA_EXPOSED", 
-               "ANUS_EXPOSED", "BUTTOCKS_EXPOSED"]
-is_nsfw = any(item["class"] in nsfw_labels and item["score"] > $sensitivityThreshold for item in result)
-print("NSFW" if is_nsfw else "SAFE")
-''';
-          break;
 
-        case 'nsfw_model':
-          pythonScript =
-              '''
+def analyze_frame(frame_info):
+    try:
+        result = detector.detect(frame_info['path'])
+        nsfw_labels = ["FEMALE_GENITALIA_EXPOSED", "FEMALE_BREAST_EXPOSED", 
+                       "MALE_GENITALIA_EXPOSED", "ANUS_EXPOSED", "BUTTOCKS_EXPOSED"]
+        is_nsfw = any(item["class"] in nsfw_labels and item["score"] > $threshold 
+                     for item in result)
+        return {
+            'index': frame_info['index'],
+            'timestamp': frame_info['timestamp'],
+            'path': frame_info['path'],
+            'isNSFW': is_nsfw
+        }
+    except Exception as e:
+        return {
+            'index': frame_info['index'],
+            'timestamp': frame_info['timestamp'],
+            'path': frame_info['path'],
+            'isNSFW': False
+        }
+''';
+        break;
+
+      case 'nsfw_model':
+        detectorCode =
+            '''
 from nsfw_detector import predict
-import numpy as np
-predictions = predict.classify("$framePath")
-if "$framePath" in predictions:
-    scores = predictions["$framePath"]
-    nsfw_score = scores.get("porn", 0) + scores.get("hentai", 0)
-    if $sensitivityThreshold < 0.7:
-        nsfw_score += scores.get("sexy", 0) * 0.5
-    is_nsfw = nsfw_score > $sensitivityThreshold
-    print("NSFW" if is_nsfw else "SAFE")
-else:
-    print("SAFE")
+
+def analyze_frame(frame_info):
+    try:
+        predictions = predict.classify(frame_info['path'])
+        if frame_info['path'] in predictions:
+            scores = predictions[frame_info['path']]
+            nsfw_score = scores.get("porn", 0) + scores.get("hentai", 0)
+            if $threshold < 0.3:
+                nsfw_score += scores.get("sexy", 0) * 0.5
+            is_nsfw = nsfw_score > $threshold
+        else:
+            is_nsfw = False
+        
+        return {
+            'index': frame_info['index'],
+            'timestamp': frame_info['timestamp'],
+            'path': frame_info['path'],
+            'isNSFW': is_nsfw
+        }
+    except Exception as e:
+        return {
+            'index': frame_info['index'],
+            'timestamp': frame_info['timestamp'],
+            'path': frame_info['path'],
+            'isNSFW': False
+        }
 ''';
-          break;
+        break;
 
-        case 'yahoo_open_nsfw':
-          pythonScript =
-              '''
-import tensorflow as tf
-import numpy as np
-from PIL import Image
-
-model = tf.keras.models.load_model("$currentDir/.venv/open_nsfw_model")
-
-img = Image.open("$framePath").convert('RGB').resize((224, 224))
-img_array = np.array(img) / 255.0
-img_array = np.expand_dims(img_array, axis=0)
-
-prediction = model.predict(img_array)
-nsfw_score = prediction[0][1]
-
-is_nsfw = nsfw_score > $sensitivityThreshold
-print("NSFW" if is_nsfw else "SAFE")
-''';
-          break;
-
-        case 'clip_interrogator':
-          pythonScript =
-              '''
+      case 'clip_interrogator':
+        detectorCode =
+            '''
 import torch
 from transformers import CLIPProcessor, CLIPModel
 from PIL import Image
 
 model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
 processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-
-image = Image.open("$framePath")
-inputs = processor(images=image, return_tensors="pt")
 
 nsfw_prompts = [
     "explicit nudity", "naked person", "sexual content", 
@@ -368,46 +495,101 @@ nsfw_prompts = [
 ]
 safe_prompts = ["normal clothed person", "safe content", "appropriate image"]
 
-text_inputs = processor(text=nsfw_prompts + safe_prompts, return_tensors="pt", padding=True)
-
-with torch.no_grad():
-    image_features = model.get_image_features(**inputs)
-    text_features = model.get_text_features(**text_inputs)
-    
-    image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-    text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-    
-    similarities = (image_features @ text_features.T).squeeze()
-
-nsfw_sim = similarities[:len(nsfw_prompts)].max().item()
-safe_sim = similarities[len(nsfw_prompts):].max().item()
-
-is_nsfw = nsfw_sim > safe_sim and nsfw_sim > $sensitivityThreshold
-print("NSFW" if is_nsfw else "SAFE")
+def analyze_frame(frame_info):
+    try:
+        image = Image.open(frame_info['path'])
+        inputs = processor(images=image, return_tensors="pt")
+        text_inputs = processor(text=nsfw_prompts + safe_prompts, return_tensors="pt", padding=True)
+        
+        with torch.no_grad():
+            image_features = model.get_image_features(**inputs)
+            text_features = model.get_text_features(**text_inputs)
+            
+            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
+            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
+            
+            similarities = (image_features @ text_features.T).squeeze()
+        
+        nsfw_sim = similarities[:len(nsfw_prompts)].max().item()
+        safe_sim = similarities[len(nsfw_prompts):].max().item()
+        is_nsfw = nsfw_sim > safe_sim and nsfw_sim > $threshold
+        
+        return {
+            'index': frame_info['index'],
+            'timestamp': frame_info['timestamp'],
+            'path': frame_info['path'],
+            'isNSFW': is_nsfw
+        }
+    except Exception as e:
+        return {
+            'index': frame_info['index'],
+            'timestamp': frame_info['timestamp'],
+            'path': frame_info['path'],
+            'isNSFW': False
+        }
 ''';
-          break;
-      }
-
-      ProcessResult result;
-      if (await File(pythonPath).exists()) {
-        result = await Process.run(pythonPath, ['-c', pythonScript]);
-      } else {
-        result = await Process.run('python3', [
-          '-c',
-          'import sys; sys.path.insert(0, "$currentDir/.venv/lib/python3.10/site-packages"); ' +
-              pythonScript,
-        ]);
-      }
-
-      if (result.exitCode == 0) {
-        String output = result.stdout.toString().trim();
-        return output.contains("NSFW");
-      } else {
-        return false;
-      }
-    } catch (e) {
-      return false;
+        break;
     }
+
+    return '''
+import json
+import multiprocessing
+from pathlib import Path
+
+$detectorCode
+
+def update_progress(completed):
+    try:
+        with open('$progressPath', 'w') as f:
+            f.write(str(completed))
+    except:
+        pass
+
+def worker_wrapper(args):
+    frame_info, progress_queue = args
+    result = analyze_frame(frame_info)
+    progress_queue.put(1)
+    return result
+
+if __name__ == '__main__':
+    frames = $frameListJson
+    
+    # Create progress file
+    update_progress(0)
+    
+    # Use multiprocessing Pool
+    manager = multiprocessing.Manager()
+    progress_queue = manager.Queue()
+    
+    # Prepare arguments with progress queue
+    args = [(frame, progress_queue) for frame in frames]
+    
+    # Track progress in background
+    completed = 0
+    
+    with multiprocessing.Pool(processes=$numThreads) as pool:
+        results = []
+        async_results = pool.map_async(worker_wrapper, args)
+        
+        # Update progress while waiting
+        while not async_results.ready():
+            try:
+                while not progress_queue.empty():
+                    progress_queue.get()
+                    completed += 1
+                    update_progress(completed)
+            except:
+                pass
+            async_results.wait(0.5)
+        
+        results = async_results.get()
+    
+    # Write results
+    with open('$resultPath', 'w') as f:
+        json.dump(results, f)
+    
+    update_progress(len(frames))
+''';
   }
 
   void generateSkipTimestamps() {
@@ -801,193 +983,172 @@ print("NSFW" if is_nsfw else "SAFE")
         position & const Size(40, 40),
         Offset.zero & overlay.size,
       ),
+      color: Colors.grey[900],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      elevation: 8,
       items: <PopupMenuEntry<String>>[
-        PopupMenuItem<String>(
-          value: 'open_video',
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              pickAndLoadVideo();
-            });
-          },
-          child: const Row(
-            children: [
-              Icon(Icons.folder_open, size: 20),
-              SizedBox(width: 8),
-              Text('Open Video File'),
-            ],
-          ),
+        _buildMenuItem(
+          'open_video',
+          Icons.folder_open,
+          'Open Video File',
+          pickAndLoadVideo,
         ),
         const PopupMenuDivider(),
-        PopupMenuItem<String>(
-          value: 'gpu_acceleration',
-          onTap: () {
-            Future.delayed(Duration.zero, () async {
-              setState(() {
-                hardwareAcceleration = !hardwareAcceleration;
-              });
+        _buildMenuItem(
+          'gpu_acceleration',
+          hardwareAcceleration
+              ? Icons.check_box
+              : Icons.check_box_outline_blank,
+          'GPU Acceleration',
+          () {
+            setState(() {
+              hardwareAcceleration = !hardwareAcceleration;
+            });
 
-              if (isInitialized) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      'GPU Acceleration ${hardwareAcceleration ? 'enabled' : 'disabled'}. Reloading video...',
-                    ),
+            if (isInitialized) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'GPU Acceleration ${hardwareAcceleration ? 'enabled' : 'disabled'}. Reloading video...',
                   ),
-                );
-                _recreateController();
-              } else {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      'GPU Acceleration ${hardwareAcceleration ? 'enabled' : 'disabled'}',
-                    ),
+                ),
+              );
+              _recreateController();
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    'GPU Acceleration ${hardwareAcceleration ? 'enabled' : 'disabled'}',
                   ),
-                );
-              }
-            });
+                ),
+              );
+            }
           },
-          child: Row(
-            children: [
-              Icon(
-                hardwareAcceleration
-                    ? Icons.check_box
-                    : Icons.check_box_outline_blank,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              const Text('GPU Acceleration'),
-            ],
-          ),
         ),
         const PopupMenuDivider(),
-        PopupMenuItem<String>(
-          value: 'skip_mode',
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              _showSkipModeDialog(context);
-            });
-          },
-          child: Row(
-            children: [
-              Icon(
-                autoSkipEnabled ? Icons.fast_forward : Icons.warning_amber,
-                size: 20,
-              ),
-              const SizedBox(width: 8),
-              Text(autoSkipEnabled ? 'Mode: Auto-Skip' : 'Mode: Warn Only'),
-            ],
-          ),
+        _buildMenuItem(
+          'skip_mode',
+          autoSkipEnabled ? Icons.fast_forward : Icons.warning_amber,
+          autoSkipEnabled ? 'Mode: Auto-Skip' : 'Mode: Warn Only',
+          () => _showSkipModeDialog(context),
         ),
         const PopupMenuDivider(),
-        PopupMenuItem<String>(
-          value: 'detector_settings',
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              _showDetectorSettingsDialog(context);
-            });
-          },
-          child: const Row(
-            children: [
-              Icon(Icons.settings, size: 20),
-              SizedBox(width: 8),
-              Text('Detection Settings'),
-            ],
-          ),
+        _buildMenuItem(
+          'detector_settings',
+          Icons.settings,
+          'Detection Settings',
+          () => _showDetectorSettingsDialog(context),
         ),
-        PopupMenuItem<String>(
-          value: 'scan_nsfw',
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              scanVideoForNSFW();
-            });
-          },
-          child: const Row(
-            children: [
-              Icon(Icons.search, size: 20),
-              SizedBox(width: 8),
-              Text('Scan for NSFW Scenes'),
-            ],
-          ),
+        _buildMenuItem(
+          'scan_nsfw',
+          Icons.search,
+          'Scan for NSFW Scenes',
+          scanVideoForNSFW,
         ),
-        PopupMenuItem<String>(
-          value: 'export_json',
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              exportSkipJSON();
-            });
-          },
-          child: const Row(
-            children: [
-              Icon(Icons.download, size: 20),
-              SizedBox(width: 8),
-              Text('Export Skip JSON'),
-            ],
-          ),
+        _buildMenuItem(
+          'export_json',
+          Icons.download,
+          'Export Skip JSON',
+          exportSkipJSON,
         ),
         const PopupMenuDivider(),
-        PopupMenuItem<String>(
-          value: 'imdb_guide',
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              openIMDBParentalGuide();
-            });
-          },
-          child: const Row(
-            children: [
-              Icon(Icons.info_outline, size: 20),
-              SizedBox(width: 8),
-              Text('IMDB Parental Guide'),
-            ],
-          ),
+        _buildMenuItem(
+          'imdb_guide',
+          Icons.info_outline,
+          'IMDB Parental Guide',
+          () => openIMDBParentalGuide(),
         ),
         const PopupMenuDivider(),
-        PopupMenuItem<String>(
-          value: 'load_skips',
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              _showLoadSkipsDialog(context);
-            });
-          },
-          child: const Row(
-            children: [
-              Icon(Icons.file_upload, size: 20),
-              SizedBox(width: 8),
-              Text('Load Skip JSON'),
-            ],
-          ),
+        _buildMenuItem(
+          'load_skips',
+          Icons.file_upload,
+          'Load Skip JSON',
+          () => _showLoadSkipsDialog(context),
         ),
-        PopupMenuItem<String>(
-          value: 'view_skips',
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              _showSkipsDialog(context);
-            });
-          },
-          child: const Row(
-            children: [
-              Icon(Icons.list, size: 20),
-              SizedBox(width: 8),
-              Text('View Skips'),
-            ],
-          ),
+        _buildMenuItem(
+          'view_skips',
+          Icons.list,
+          'View Skips',
+          () => _showSkipsDialog(context),
         ),
         const PopupMenuDivider(),
-        PopupMenuItem<String>(
-          value: 'speed',
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              _showSpeedDialog(context);
-            });
-          },
-          child: Row(
-            children: [
-              const Icon(Icons.speed, size: 20),
-              const SizedBox(width: 8),
-              Text('Speed: ${playbackSpeed}x'),
-            ],
-          ),
+        _buildMenuItem(
+          'speed',
+          Icons.speed,
+          'Speed: ${playbackSpeed}x',
+          () => _showSpeedDialog(context),
+        ),
+        const PopupMenuDivider(),
+        _buildMenuItem(
+          'threads',
+          Icons.memory,
+          'Threads: $parallelThreads',
+          () => _showThreadsDialog(context),
         ),
       ],
+    );
+  }
+
+  PopupMenuItem<String> _buildMenuItem(
+    String value,
+    IconData icon,
+    String text,
+    VoidCallback onTap,
+  ) {
+    return PopupMenuItem<String>(
+      value: value,
+      onTap: () {
+        Future.delayed(Duration.zero, onTap);
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 4),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: Colors.white),
+            const SizedBox(width: 12),
+            Text(text, style: const TextStyle(color: Colors.white)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showThreadsDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Processing Threads'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('More threads = faster scanning (uses more CPU)'),
+            const SizedBox(height: 16),
+            ...([1, 2, 4, 6, 8].map((threads) {
+              return RadioListTile<int>(
+                title: Text('$threads ${threads == 1 ? 'Thread' : 'Threads'}'),
+                subtitle: Text(
+                  threads == 1
+                      ? 'Sequential processing'
+                      : 'Up to ${threads}x faster',
+                ),
+                value: threads,
+                groupValue: parallelThreads,
+                onChanged: (value) {
+                  setState(() {
+                    parallelThreads = value!;
+                  });
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Using $value threads for scanning'),
+                    ),
+                  );
+                },
+              );
+            })),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1106,13 +1267,13 @@ print("NSFW" if is_nsfw else "SAFE")
                 const SizedBox(height: 10),
                 Row(
                   children: [
-                    const Text('Low'),
+                    const Text('Low', style: TextStyle(fontSize: 12)),
                     Expanded(
                       child: Slider(
                         value: tempSensitivity,
-                        min: 0.3,
+                        min: 0.1,
                         max: 0.9,
-                        divisions: 12,
+                        divisions: 16,
                         label: tempSensitivity.toStringAsFixed(2),
                         onChanged: (value) {
                           setDialogState(() {
@@ -1121,12 +1282,18 @@ print("NSFW" if is_nsfw else "SAFE")
                         },
                       ),
                     ),
-                    const Text('High'),
+                    const Text('High', style: TextStyle(fontSize: 12)),
                   ],
                 ),
-                Text(
-                  'Current: ${tempSensitivity.toStringAsFixed(2)}',
-                  style: const TextStyle(color: Colors.grey, fontSize: 12),
+                Center(
+                  child: Text(
+                    'Current: ${tempSensitivity.toStringAsFixed(2)}',
+                    style: const TextStyle(
+                      color: Colors.grey,
+                      fontSize: 14,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
                 ),
                 const SizedBox(height: 10),
                 Container(
@@ -1136,8 +1303,8 @@ print("NSFW" if is_nsfw else "SAFE")
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: const Text(
-                    'Lower threshold = More sensitive (catches minor scenes)\n'
-                    'Higher threshold = Less sensitive (only explicit scenes)',
+                    '✅ FIXED: Higher value = More sensitive (catches more scenes)\n'
+                    'Lower value = Less sensitive (only explicit scenes)',
                     style: TextStyle(fontSize: 12),
                   ),
                 ),
@@ -1243,26 +1410,30 @@ print("NSFW" if is_nsfw else "SAFE")
           width: 300,
           child: skipTimestamps.isEmpty
               ? const Text('No skip timestamps configured')
-              : Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: skipTimestamps.entries.map((entry) {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 4),
-                      child: Row(
-                        children: [
-                          Text(
-                            entry.key,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          const SizedBox(width: 8),
-                          const Icon(Icons.arrow_forward, size: 16),
-                          const SizedBox(width: 8),
-                          Text(entry.value),
-                        ],
-                      ),
-                    );
-                  }).toList(),
+              : SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: skipTimestamps.entries.map((entry) {
+                      return Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          children: [
+                            Text(
+                              entry.key,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            const Icon(Icons.arrow_forward, size: 16),
+                            const SizedBox(width: 8),
+                            Text(entry.value),
+                          ],
+                        ),
+                      );
+                    }).toList(),
+                  ),
                 ),
         ),
         actions: [
@@ -1319,9 +1490,11 @@ print("NSFW" if is_nsfw else "SAFE")
                       color: Color.fromARGB(255, 82, 176, 132),
                     ),
                     const SizedBox(height: 30),
-                    const Text(
-                      'Scanning video for NSFW content...',
-                      style: TextStyle(
+                    Text(
+                      scanProgress < 0.5
+                          ? 'Extracting frames...'
+                          : 'Analyzing with AI ($parallelThreads threads)...',
+                      style: const TextStyle(
                         color: Colors.white,
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
@@ -1348,7 +1521,7 @@ print("NSFW" if is_nsfw else "SAFE")
                           ),
                           const SizedBox(height: 8),
                           Text(
-                            'Current timestamp: ${formatTime(currentScanTimestamp)}',
+                            'Using Python multiprocessing with $parallelThreads workers',
                             style: const TextStyle(
                               color: Colors.white70,
                               fontSize: 14,
@@ -1477,8 +1650,9 @@ print("NSFW" if is_nsfw else "SAFE")
                   child: Container(
                     padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
-                      color: Colors.black54,
+                      color: Colors.black87,
                       borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: Colors.white24),
                     ),
                     child: const Icon(
                       Icons.more_vert,
@@ -1498,8 +1672,9 @@ print("NSFW" if is_nsfw else "SAFE")
                     vertical: 6,
                   ),
                   decoration: BoxDecoration(
-                    color: Colors.black54,
+                    color: Colors.black87,
                     borderRadius: BorderRadius.circular(4),
+                    border: Border.all(color: Colors.white24),
                   ),
                   child: Row(
                     children: [
@@ -1552,7 +1727,6 @@ print("NSFW" if is_nsfw else "SAFE")
                 child: Stack(
                   alignment: Alignment.center,
                   children: [
-                    // Skip markers layer - always visible when there are skips
                     if (skipTimestamps.isNotEmpty && totalDuration > 0)
                       Positioned.fill(
                         child: Padding(
@@ -1566,7 +1740,6 @@ print("NSFW" if is_nsfw else "SAFE")
                           ),
                         ),
                       ),
-                    // Slider on top
                     SliderTheme(
                       data: SliderThemeData(
                         trackHeight: 4,
@@ -1651,7 +1824,6 @@ print("NSFW" if is_nsfw else "SAFE")
   }
 }
 
-// Enhanced Skip Marker Painter with clear start/end indicators
 class EnhancedSkipMarkerPainter extends CustomPainter {
   final Map<String, String> skipTimestamps;
   final double totalDuration;
@@ -1675,9 +1847,7 @@ class EnhancedSkipMarkerPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final trackHeight = 4.0;
-    final trackTop = (size.height - trackHeight) / 2;
-    final markerHeight = 12.0; // Taller markers for better visibility
+    final markerHeight = 12.0;
     final markerTop = (size.height - markerHeight) / 2;
 
     for (var entry in skipTimestamps.entries) {
@@ -1687,7 +1857,6 @@ class EnhancedSkipMarkerPainter extends CustomPainter {
       double startX = (startSeconds / totalDuration) * size.width;
       double endX = (endSeconds / totalDuration) * size.width;
 
-      // Draw the skip region background (semi-transparent red)
       final regionPaint = Paint()
         ..color = Colors.red.withOpacity(0.3)
         ..style = PaintingStyle.fill;
@@ -1697,7 +1866,6 @@ class EnhancedSkipMarkerPainter extends CustomPainter {
         regionPaint,
       );
 
-      // Draw the skip region border (more opaque)
       final borderPaint = Paint()
         ..color = Colors.red.withOpacity(0.6)
         ..style = PaintingStyle.stroke
@@ -1708,12 +1876,10 @@ class EnhancedSkipMarkerPainter extends CustomPainter {
         borderPaint,
       );
 
-      // Draw START marker (left edge)
       final startMarkerPaint = Paint()
         ..color = Colors.red
         ..style = PaintingStyle.fill;
 
-      // Triangle pointing right for START
       final startPath = Path();
       startPath.moveTo(startX, markerTop);
       startPath.lineTo(startX + 6, markerTop + markerHeight / 2);
@@ -1721,7 +1887,6 @@ class EnhancedSkipMarkerPainter extends CustomPainter {
       startPath.close();
       canvas.drawPath(startPath, startMarkerPaint);
 
-      // Vertical line for START
       canvas.drawLine(
         Offset(startX, markerTop),
         Offset(startX, markerTop + markerHeight),
@@ -1730,12 +1895,10 @@ class EnhancedSkipMarkerPainter extends CustomPainter {
           ..strokeWidth = 2.0,
       );
 
-      // Draw END marker (right edge)
       final endMarkerPaint = Paint()
         ..color = Colors.orange
         ..style = PaintingStyle.fill;
 
-      // Triangle pointing left for END
       final endPath = Path();
       endPath.moveTo(endX, markerTop);
       endPath.lineTo(endX - 6, markerTop + markerHeight / 2);
@@ -1743,7 +1906,6 @@ class EnhancedSkipMarkerPainter extends CustomPainter {
       endPath.close();
       canvas.drawPath(endPath, endMarkerPaint);
 
-      // Vertical line for END
       canvas.drawLine(
         Offset(endX, markerTop),
         Offset(endX, markerTop + markerHeight),
@@ -1752,7 +1914,6 @@ class EnhancedSkipMarkerPainter extends CustomPainter {
           ..strokeWidth = 2.0,
       );
 
-      // Add glow effect if playback is near this skip region
       if (currentTime >= startSeconds - 5 && currentTime <= endSeconds + 5) {
         final glowPaint = Paint()
           ..color = Colors.red.withOpacity(0.2)
