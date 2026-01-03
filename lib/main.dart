@@ -316,7 +316,7 @@ class _HomeState extends State<Home> {
     String framesDir,
   ) async {
     final currentDir = Directory.current.path;
-    final pythonPath = '$currentDir/.venv/Scripts/python.exe';
+    final pythonPath = '$currentDir/python/python.exe';
 
     // Create a temporary Python script for batch processing
     final scriptPath = '$framesDir/batch_analyzer.py';
