@@ -318,8 +318,7 @@ class _HomeState extends State<Home> {
     final currentDir = Directory.current.path;
 
     // Path to your standalone Python executable built with PyInstaller
-    final pythonExePath =
-        '$currentDir/detector/detector.exe'; // Adjust path as needed
+    final pythonExePath = '$currentDir/detector.exe';
 
     final inputJsonPath = '$framesDir/input.json';
     final resultPath = '$framesDir/results.json';
@@ -340,26 +339,59 @@ class _HomeState extends State<Home> {
 
     await File(inputJsonPath).writeAsString(jsonEncode(inputData));
 
+    // Verify input file was created
+    if (!await File(inputJsonPath).exists()) {
+      throw Exception('Failed to create input JSON file');
+    }
+
     // Start progress monitoring
     _startProgressMonitoring(progressPath, frameTasks.length);
 
     // Run the standalone Python executable
-    ProcessResult result = await Process.run(pythonExePath, [inputJsonPath]);
+    print('Running detector: $pythonExePath');
+    print('Input JSON: $inputJsonPath');
+    print('Output path: $resultPath');
+
+    ProcessResult result = await Process.run(pythonExePath, [
+      '--input',
+      inputJsonPath,
+      '--output',
+      resultPath,
+    ]);
 
     // Stop progress monitoring
     progressUpdateTimer?.cancel();
 
+    // Print output for debugging
+    print('Exit code: ${result.exitCode}');
+    print('STDOUT: ${result.stdout}');
+    print('STDERR: ${result.stderr}');
+
     if (result.exitCode != 0) {
-      throw Exception('Detector failed: ${result.stderr}');
+      throw Exception(
+        'Detector failed with exit code ${result.exitCode}: ${result.stderr}',
+      );
     }
 
     // Read results
     final resultsFile = File(resultPath);
     if (!await resultsFile.exists()) {
-      throw Exception('Results file not found');
+      // Check if input file still exists
+      final inputExists = await File(inputJsonPath).exists();
+      throw Exception(
+        'Results file not found at: $resultPath\n'
+        'Input file exists: $inputExists\n'
+        'Stdout: ${result.stdout}\n'
+        'Stderr: ${result.stderr}',
+      );
     }
 
     String jsonContent = await resultsFile.readAsString();
+
+    if (jsonContent.isEmpty) {
+      throw Exception('Results file is empty');
+    }
+
     List<dynamic> jsonResults = jsonDecode(jsonContent);
 
     return jsonResults.map((item) => Map<String, dynamic>.from(item)).toList();
