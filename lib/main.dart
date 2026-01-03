@@ -46,30 +46,26 @@ class _HomeState extends State<Home> {
   bool isInitialized = false;
   bool isScanning = false;
   double scanProgress = 0.0;
+  int currentFrameNumber = 0;
+  int totalFramesToScan = 0;
+  double currentScanTimestamp = 0.0;
+  int detectedScenesCount = 0;
+  bool hardwareAcceleration = false;
 
-  // Detection settings
   String selectedDetector = 'nudenet';
-  double sensitivityThreshold = 0.6;
+  double sensitivityThreshold = 0.5;
+  bool autoSkipEnabled = true;
+  bool _isHovering = false;
 
-  // Auto-skip or warn setting
-  bool autoSkipEnabled = true; // true = auto skip, false = just warn
-
-  // Skip timestamps: Map of "start_time" -> "skip_to_time"
   Map<String, String> skipTimestamps = {};
-
-  // Detected NSFW scenes
   List<Map<String, dynamic>> detectedScenes = [];
+  DateTime? scanStartTime;
 
   @override
   void initState() {
     super.initState();
     player = Player(configuration: PlayerConfiguration(title: 'PGPlayer'));
-    controller = VideoController(
-      player,
-      configuration: VideoControllerConfiguration(
-        enableHardwareAcceleration: false,
-      ),
-    );
+    _initializeController();
 
     player.stream.playing.listen((playing) {
       if (mounted) {
@@ -97,6 +93,39 @@ class _HomeState extends State<Home> {
     });
 
     startSkipCheckTimer();
+  }
+
+  void _initializeController() {
+    controller = VideoController(
+      player,
+      configuration: VideoControllerConfiguration(
+        enableHardwareAcceleration: hardwareAcceleration,
+      ),
+    );
+  }
+
+  void _recreateController() async {
+    bool wasPlaying = isPlaying;
+    Duration currentPosition = player.state.position;
+    String? currentPath = videoPath;
+
+    setState(() {
+      isInitialized = false;
+    });
+
+    _initializeController();
+
+    if (currentPath != null) {
+      await player.open(Media(currentPath));
+      await player.seek(currentPosition);
+      if (wasPlaying) {
+        await player.play();
+      }
+
+      setState(() {
+        isInitialized = true;
+      });
+    }
   }
 
   @override
@@ -162,6 +191,9 @@ class _HomeState extends State<Home> {
       isScanning = true;
       scanProgress = 0.0;
       detectedScenes = [];
+      currentFrameNumber = 0;
+      detectedScenesCount = 0;
+      scanStartTime = DateTime.now();
     });
 
     try {
@@ -174,6 +206,10 @@ class _HomeState extends State<Home> {
 
       int intervalSeconds = 2;
       int totalFrames = (totalDuration / intervalSeconds).ceil();
+
+      setState(() {
+        totalFramesToScan = totalFrames;
+      });
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -207,10 +243,15 @@ class _HomeState extends State<Home> {
               'frame': i,
               'path': framePath,
             });
+            setState(() {
+              detectedScenesCount++;
+            });
           }
         }
 
         setState(() {
+          currentFrameNumber = i + 1;
+          currentScanTimestamp = timestamp;
           scanProgress = (i + 1) / totalFrames;
         });
       }
@@ -434,7 +475,6 @@ print("NSFW" if is_nsfw else "SAFE")
       if ((currentTime - skipFromSeconds).abs() < 0.5 &&
           currentTime < skipToSeconds) {
         if (autoSkipEnabled) {
-          // Auto-skip the scene
           player.seek(Duration(milliseconds: (skipToSeconds * 1000).toInt()));
 
           if (mounted) {
@@ -449,7 +489,6 @@ print("NSFW" if is_nsfw else "SAFE")
             );
           }
         } else {
-          // Just warn the user
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
@@ -659,9 +698,13 @@ print("NSFW" if is_nsfw else "SAFE")
 
   void resetControlsTimer() {
     hideControlsTimer?.cancel();
-    setState(() {
-      showControls = true;
-    });
+
+    if (!showControls) {
+      setState(() {
+        showControls = true;
+      });
+    }
+
     if (isPlaying) {
       hideControlsTimer = Timer(const Duration(seconds: 3), () {
         if (mounted && isPlaying) {
@@ -670,6 +713,36 @@ print("NSFW" if is_nsfw else "SAFE")
           });
         }
       });
+    }
+  }
+
+  void _onMouseMove() {
+    if (!_isHovering) {
+      _isHovering = true;
+      resetControlsTimer();
+
+      Future.delayed(const Duration(milliseconds: 100), () {
+        _isHovering = false;
+      });
+    }
+  }
+
+  String _calculateEstimatedTime() {
+    if (scanStartTime == null || currentFrameNumber == 0) {
+      return 'Calculating...';
+    }
+
+    final elapsed = DateTime.now().difference(scanStartTime!).inSeconds;
+    final avgTimePerFrame = elapsed / currentFrameNumber;
+    final remainingFrames = totalFramesToScan - currentFrameNumber;
+    final estimatedSecondsLeft = (avgTimePerFrame * remainingFrames).round();
+
+    if (estimatedSecondsLeft < 60) {
+      return '$estimatedSecondsLeft seconds remaining';
+    } else {
+      final minutes = (estimatedSecondsLeft / 60).floor();
+      final seconds = estimatedSecondsLeft % 60;
+      return '$minutes min $seconds sec remaining';
     }
   }
 
@@ -731,6 +804,11 @@ print("NSFW" if is_nsfw else "SAFE")
       items: <PopupMenuEntry<String>>[
         PopupMenuItem<String>(
           value: 'open_video',
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              pickAndLoadVideo();
+            });
+          },
           child: const Row(
             children: [
               Icon(Icons.folder_open, size: 20),
@@ -738,15 +816,57 @@ print("NSFW" if is_nsfw else "SAFE")
               Text('Open Video File'),
             ],
           ),
+        ),
+        const PopupMenuDivider(),
+        PopupMenuItem<String>(
+          value: 'gpu_acceleration',
           onTap: () {
-            Future.delayed(Duration.zero, () {
-              pickAndLoadVideo();
+            Future.delayed(Duration.zero, () async {
+              setState(() {
+                hardwareAcceleration = !hardwareAcceleration;
+              });
+
+              if (isInitialized) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'GPU Acceleration ${hardwareAcceleration ? 'enabled' : 'disabled'}. Reloading video...',
+                    ),
+                  ),
+                );
+                _recreateController();
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      'GPU Acceleration ${hardwareAcceleration ? 'enabled' : 'disabled'}',
+                    ),
+                  ),
+                );
+              }
             });
           },
+          child: Row(
+            children: [
+              Icon(
+                hardwareAcceleration
+                    ? Icons.check_box
+                    : Icons.check_box_outline_blank,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              const Text('GPU Acceleration'),
+            ],
+          ),
         ),
         const PopupMenuDivider(),
         PopupMenuItem<String>(
           value: 'skip_mode',
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              _showSkipModeDialog(context);
+            });
+          },
           child: Row(
             children: [
               Icon(
@@ -757,15 +877,15 @@ print("NSFW" if is_nsfw else "SAFE")
               Text(autoSkipEnabled ? 'Mode: Auto-Skip' : 'Mode: Warn Only'),
             ],
           ),
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              _showSkipModeDialog(context);
-            });
-          },
         ),
         const PopupMenuDivider(),
         PopupMenuItem<String>(
           value: 'detector_settings',
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              _showDetectorSettingsDialog(context);
+            });
+          },
           child: const Row(
             children: [
               Icon(Icons.settings, size: 20),
@@ -773,14 +893,14 @@ print("NSFW" if is_nsfw else "SAFE")
               Text('Detection Settings'),
             ],
           ),
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              _showDetectorSettingsDialog(context);
-            });
-          },
         ),
         PopupMenuItem<String>(
           value: 'scan_nsfw',
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              scanVideoForNSFW();
+            });
+          },
           child: const Row(
             children: [
               Icon(Icons.search, size: 20),
@@ -788,14 +908,14 @@ print("NSFW" if is_nsfw else "SAFE")
               Text('Scan for NSFW Scenes'),
             ],
           ),
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              scanVideoForNSFW();
-            });
-          },
         ),
         PopupMenuItem<String>(
           value: 'export_json',
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              exportSkipJSON();
+            });
+          },
           child: const Row(
             children: [
               Icon(Icons.download, size: 20),
@@ -803,15 +923,15 @@ print("NSFW" if is_nsfw else "SAFE")
               Text('Export Skip JSON'),
             ],
           ),
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              exportSkipJSON();
-            });
-          },
         ),
         const PopupMenuDivider(),
         PopupMenuItem<String>(
           value: 'imdb_guide',
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              openIMDBParentalGuide();
+            });
+          },
           child: const Row(
             children: [
               Icon(Icons.info_outline, size: 20),
@@ -819,15 +939,15 @@ print("NSFW" if is_nsfw else "SAFE")
               Text('IMDB Parental Guide'),
             ],
           ),
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              openIMDBParentalGuide();
-            });
-          },
         ),
         const PopupMenuDivider(),
         PopupMenuItem<String>(
           value: 'load_skips',
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              _showLoadSkipsDialog(context);
+            });
+          },
           child: const Row(
             children: [
               Icon(Icons.file_upload, size: 20),
@@ -835,14 +955,14 @@ print("NSFW" if is_nsfw else "SAFE")
               Text('Load Skip JSON'),
             ],
           ),
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              _showLoadSkipsDialog(context);
-            });
-          },
         ),
         PopupMenuItem<String>(
           value: 'view_skips',
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              _showSkipsDialog(context);
+            });
+          },
           child: const Row(
             children: [
               Icon(Icons.list, size: 20),
@@ -850,15 +970,15 @@ print("NSFW" if is_nsfw else "SAFE")
               Text('View Skips'),
             ],
           ),
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              _showSkipsDialog(context);
-            });
-          },
         ),
         const PopupMenuDivider(),
         PopupMenuItem<String>(
           value: 'speed',
+          onTap: () {
+            Future.delayed(Duration.zero, () {
+              _showSpeedDialog(context);
+            });
+          },
           child: Row(
             children: [
               const Icon(Icons.speed, size: 20),
@@ -866,11 +986,6 @@ print("NSFW" if is_nsfw else "SAFE")
               Text('Speed: ${playbackSpeed}x'),
             ],
           ),
-          onTap: () {
-            Future.delayed(Duration.zero, () {
-              _showSpeedDialog(context);
-            });
-          },
         ),
       ],
     );
@@ -1203,26 +1318,81 @@ print("NSFW" if is_nsfw else "SAFE")
                     const CircularProgressIndicator(
                       color: Color.fromARGB(255, 82, 176, 132),
                     ),
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 30),
                     const Text(
                       'Scanning video for NSFW content...',
-                      style: TextStyle(color: Colors.white, fontSize: 16),
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 20),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: Colors.white.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Column(
+                        children: [
+                          Text(
+                            'Frame: $currentFrameNumber / $totalFramesToScan',
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Current timestamp: ${formatTime(currentScanTimestamp)}',
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 14,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            'Detected scenes: $detectedScenesCount',
+                            style: TextStyle(
+                              color: detectedScenesCount > 0
+                                  ? Colors.orange
+                                  : Colors.green,
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 20),
                     SizedBox(
-                      width: 300,
+                      width: 350,
                       child: LinearProgressIndicator(
                         value: scanProgress,
                         backgroundColor: Colors.grey[700],
                         color: const Color.fromARGB(255, 82, 176, 132),
+                        minHeight: 8,
                       ),
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 12),
                     Text(
-                      '${(scanProgress * 100).toStringAsFixed(0)}%',
+                      '${(scanProgress * 100).toStringAsFixed(1)}%',
                       style: const TextStyle(
-                        color: Colors.white70,
-                        fontSize: 14,
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Estimated time: ${_calculateEstimatedTime()}',
+                      style: const TextStyle(
+                        color: Colors.white54,
+                        fontSize: 12,
                       ),
                     ),
                   ],
@@ -1236,7 +1406,7 @@ print("NSFW" if is_nsfw else "SAFE")
 
   Widget _buildPlayer() {
     return MouseRegion(
-      onHover: (_) => resetControlsTimer(),
+      onHover: (_) => _onMouseMove(),
       child: GestureDetector(
         onTap: togglePlayPause,
         onSecondaryTapDown: (details) {
@@ -1293,20 +1463,19 @@ print("NSFW" if is_nsfw else "SAFE")
                       ),
               ),
             ),
-            // Menu button overlay (top-right)
             if (showControls && isInitialized)
               Positioned(
                 top: 10,
                 right: 10,
-                child: IconButton(
-                  onPressed: () {
+                child: GestureDetector(
+                  onTap: () {
                     final RenderBox renderBox =
                         context.findRenderObject() as RenderBox;
                     final size = renderBox.size;
                     showContextMenu(context, Offset(size.width - 50, 50));
                   },
-                  icon: Container(
-                    padding: const EdgeInsets.all(8),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
                     decoration: BoxDecoration(
                       color: Colors.black54,
                       borderRadius: BorderRadius.circular(20),
@@ -1319,7 +1488,6 @@ print("NSFW" if is_nsfw else "SAFE")
                   ),
                 ),
               ),
-            // Skip indicator
             if (skipTimestamps.isNotEmpty && isInitialized && showControls)
               Positioned(
                 top: 10,
@@ -1354,7 +1522,6 @@ print("NSFW" if is_nsfw else "SAFE")
                   ),
                 ),
               ),
-            // Controls overlay
             if ((showControls || !isPlaying) && isInitialized)
               Positioned(bottom: 0, left: 0, right: 0, child: _buildControls()),
           ],
@@ -1382,19 +1549,50 @@ print("NSFW" if is_nsfw else "SAFE")
                 style: const TextStyle(color: Colors.white, fontSize: 14),
               ),
               Expanded(
-                child: Slider(
-                  value: currentTime.clamp(0.0, totalDuration),
-                  min: 0,
-                  max: totalDuration > 0 ? totalDuration : 1,
-                  activeColor: const Color.fromARGB(255, 82, 176, 132),
-                  inactiveColor: Colors.grey[700],
-                  onChanged: (value) {
-                    if (isInitialized) {
-                      player.seek(
-                        Duration(milliseconds: (value * 1000).toInt()),
-                      );
-                    }
-                  },
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    // Skip markers layer - always visible when there are skips
+                    if (skipTimestamps.isNotEmpty && totalDuration > 0)
+                      Positioned.fill(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          child: CustomPaint(
+                            painter: EnhancedSkipMarkerPainter(
+                              skipTimestamps: skipTimestamps,
+                              totalDuration: totalDuration,
+                              currentTime: currentTime,
+                            ),
+                          ),
+                        ),
+                      ),
+                    // Slider on top
+                    SliderTheme(
+                      data: SliderThemeData(
+                        trackHeight: 4,
+                        thumbShape: const RoundSliderThumbShape(
+                          enabledThumbRadius: 6,
+                        ),
+                        overlayShape: const RoundSliderOverlayShape(
+                          overlayRadius: 12,
+                        ),
+                      ),
+                      child: Slider(
+                        value: currentTime.clamp(0.0, totalDuration),
+                        min: 0,
+                        max: totalDuration > 0 ? totalDuration : 1,
+                        activeColor: const Color.fromARGB(255, 82, 176, 132),
+                        inactiveColor: Colors.grey[700],
+                        onChanged: (value) {
+                          if (isInitialized) {
+                            player.seek(
+                              Duration(milliseconds: (value * 1000).toInt()),
+                            );
+                          }
+                        },
+                      ),
+                    ),
+                  ],
                 ),
               ),
               Text(
@@ -1450,5 +1648,134 @@ print("NSFW" if is_nsfw else "SAFE")
         ],
       ),
     );
+  }
+}
+
+// Enhanced Skip Marker Painter with clear start/end indicators
+class EnhancedSkipMarkerPainter extends CustomPainter {
+  final Map<String, String> skipTimestamps;
+  final double totalDuration;
+  final double currentTime;
+
+  EnhancedSkipMarkerPainter({
+    required this.skipTimestamps,
+    required this.totalDuration,
+    required this.currentTime,
+  });
+
+  double parseTimeToSeconds(String time) {
+    List<String> parts = time.split(':');
+    if (parts.length == 2) {
+      int minutes = int.tryParse(parts[0]) ?? 0;
+      int seconds = int.tryParse(parts[1]) ?? 0;
+      return minutes * 60.0 + seconds;
+    }
+    return 0.0;
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final trackHeight = 4.0;
+    final trackTop = (size.height - trackHeight) / 2;
+    final markerHeight = 12.0; // Taller markers for better visibility
+    final markerTop = (size.height - markerHeight) / 2;
+
+    for (var entry in skipTimestamps.entries) {
+      double startSeconds = parseTimeToSeconds(entry.key);
+      double endSeconds = parseTimeToSeconds(entry.value);
+
+      double startX = (startSeconds / totalDuration) * size.width;
+      double endX = (endSeconds / totalDuration) * size.width;
+
+      // Draw the skip region background (semi-transparent red)
+      final regionPaint = Paint()
+        ..color = Colors.red.withOpacity(0.3)
+        ..style = PaintingStyle.fill;
+
+      canvas.drawRect(
+        Rect.fromLTWH(startX, markerTop, endX - startX, markerHeight),
+        regionPaint,
+      );
+
+      // Draw the skip region border (more opaque)
+      final borderPaint = Paint()
+        ..color = Colors.red.withOpacity(0.6)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.0;
+
+      canvas.drawRect(
+        Rect.fromLTWH(startX, markerTop, endX - startX, markerHeight),
+        borderPaint,
+      );
+
+      // Draw START marker (left edge)
+      final startMarkerPaint = Paint()
+        ..color = Colors.red
+        ..style = PaintingStyle.fill;
+
+      // Triangle pointing right for START
+      final startPath = Path();
+      startPath.moveTo(startX, markerTop);
+      startPath.lineTo(startX + 6, markerTop + markerHeight / 2);
+      startPath.lineTo(startX, markerTop + markerHeight);
+      startPath.close();
+      canvas.drawPath(startPath, startMarkerPaint);
+
+      // Vertical line for START
+      canvas.drawLine(
+        Offset(startX, markerTop),
+        Offset(startX, markerTop + markerHeight),
+        Paint()
+          ..color = Colors.red
+          ..strokeWidth = 2.0,
+      );
+
+      // Draw END marker (right edge)
+      final endMarkerPaint = Paint()
+        ..color = Colors.orange
+        ..style = PaintingStyle.fill;
+
+      // Triangle pointing left for END
+      final endPath = Path();
+      endPath.moveTo(endX, markerTop);
+      endPath.lineTo(endX - 6, markerTop + markerHeight / 2);
+      endPath.lineTo(endX, markerTop + markerHeight);
+      endPath.close();
+      canvas.drawPath(endPath, endMarkerPaint);
+
+      // Vertical line for END
+      canvas.drawLine(
+        Offset(endX, markerTop),
+        Offset(endX, markerTop + markerHeight),
+        Paint()
+          ..color = Colors.orange
+          ..strokeWidth = 2.0,
+      );
+
+      // Add glow effect if playback is near this skip region
+      if (currentTime >= startSeconds - 5 && currentTime <= endSeconds + 5) {
+        final glowPaint = Paint()
+          ..color = Colors.red.withOpacity(0.2)
+          ..style = PaintingStyle.fill
+          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4);
+
+        canvas.drawRect(
+          Rect.fromLTWH(
+            startX - 4,
+            markerTop - 2,
+            (endX - startX) + 8,
+            markerHeight + 4,
+          ),
+          glowPaint,
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(EnhancedSkipMarkerPainter oldDelegate) {
+    return oldDelegate.skipTimestamps != skipTimestamps ||
+        oldDelegate.totalDuration != totalDuration ||
+        oldDelegate.currentTime != currentTime;
   }
 }
