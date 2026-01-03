@@ -316,43 +316,41 @@ class _HomeState extends State<Home> {
     String framesDir,
   ) async {
     final currentDir = Directory.current.path;
-    final pythonPath = '$currentDir/python/python.exe';
 
-    // Create a temporary Python script for batch processing
-    final scriptPath = '$framesDir/batch_analyzer.py';
+    // Path to your standalone Python executable built with PyInstaller
+    final pythonExePath =
+        '$currentDir/detector/detector.exe'; // Adjust path as needed
+
+    final inputJsonPath = '$framesDir/input.json';
     final resultPath = '$framesDir/results.json';
     final progressPath = '$framesDir/progress.txt';
 
     // Inverted threshold for correct sensitivity
     double actualThreshold = 1.0 - sensitivityThreshold;
 
-    String pythonScript = _generateBatchPythonScript(
-      frameTasks,
-      selectedDetector,
-      actualThreshold,
-      parallelThreads,
-      resultPath,
-      progressPath,
-    );
+    // Create input JSON for the Python executable
+    Map<String, dynamic> inputData = {
+      'frames': frameTasks,
+      'detector': selectedDetector,
+      'threshold': actualThreshold,
+      'threads': parallelThreads,
+      'result_path': resultPath,
+      'progress_path': progressPath,
+    };
 
-    await File(scriptPath).writeAsString(pythonScript);
+    await File(inputJsonPath).writeAsString(jsonEncode(inputData));
 
     // Start progress monitoring
     _startProgressMonitoring(progressPath, frameTasks.length);
 
-    // Run the Python script
-    ProcessResult result;
-    if (await File(pythonPath).exists()) {
-      result = await Process.run(pythonPath, [scriptPath]);
-    } else {
-      result = await Process.run('python3', [scriptPath]);
-    }
+    // Run the standalone Python executable
+    ProcessResult result = await Process.run(pythonExePath, [inputJsonPath]);
 
     // Stop progress monitoring
     progressUpdateTimer?.cancel();
 
     if (result.exitCode != 0) {
-      throw Exception('Python script failed: ${result.stderr}');
+      throw Exception('Detector failed: ${result.stderr}');
     }
 
     // Read results
@@ -390,206 +388,6 @@ class _HomeState extends State<Home> {
         // Ignore errors during progress reading
       }
     });
-  }
-
-  String _generateBatchPythonScript(
-    List<Map<String, dynamic>> frameTasks,
-    String detector,
-    double threshold,
-    int numThreads,
-    String resultPath,
-    String progressPath,
-  ) {
-    // Create frame list as JSON
-    String frameListJson = jsonEncode(
-      frameTasks
-          .map(
-            (t) => {
-              'index': t['index'],
-              'timestamp': t['timestamp'],
-              'path': t['path'],
-            },
-          )
-          .toList(),
-    );
-
-    String detectorCode = '';
-
-    switch (detector) {
-      case 'nudenet':
-        detectorCode =
-            '''
-from nudenet import NudeDetector
-detector = NudeDetector()
-
-def analyze_frame(frame_info):
-    try:
-        result = detector.detect(frame_info['path'])
-        nsfw_labels = ["FEMALE_GENITALIA_EXPOSED", "FEMALE_BREAST_EXPOSED", 
-                       "MALE_GENITALIA_EXPOSED", "ANUS_EXPOSED", "BUTTOCKS_EXPOSED"]
-        is_nsfw = any(item["class"] in nsfw_labels and item["score"] > $threshold 
-                     for item in result)
-        return {
-            'index': frame_info['index'],
-            'timestamp': frame_info['timestamp'],
-            'path': frame_info['path'],
-            'isNSFW': is_nsfw
-        }
-    except Exception as e:
-        return {
-            'index': frame_info['index'],
-            'timestamp': frame_info['timestamp'],
-            'path': frame_info['path'],
-            'isNSFW': False
-        }
-''';
-        break;
-
-      case 'nsfw_model':
-        detectorCode =
-            '''
-from nsfw_detector import predict
-
-def analyze_frame(frame_info):
-    try:
-        predictions = predict.classify(frame_info['path'])
-        if frame_info['path'] in predictions:
-            scores = predictions[frame_info['path']]
-            nsfw_score = scores.get("porn", 0) + scores.get("hentai", 0)
-            if $threshold < 0.3:
-                nsfw_score += scores.get("sexy", 0) * 0.5
-            is_nsfw = nsfw_score > $threshold
-        else:
-            is_nsfw = False
-        
-        return {
-            'index': frame_info['index'],
-            'timestamp': frame_info['timestamp'],
-            'path': frame_info['path'],
-            'isNSFW': is_nsfw
-        }
-    except Exception as e:
-        return {
-            'index': frame_info['index'],
-            'timestamp': frame_info['timestamp'],
-            'path': frame_info['path'],
-            'isNSFW': False
-        }
-''';
-        break;
-
-      case 'clip_interrogator':
-        detectorCode =
-            '''
-import torch
-from transformers import CLIPProcessor, CLIPModel
-from PIL import Image
-
-model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
-processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-
-nsfw_prompts = [
-    "explicit nudity", "naked person", "sexual content", 
-    "pornographic image", "intimate body parts",
-    "suggestive pose", "revealing clothing"
-]
-safe_prompts = ["normal clothed person", "safe content", "appropriate image"]
-
-def analyze_frame(frame_info):
-    try:
-        image = Image.open(frame_info['path'])
-        inputs = processor(images=image, return_tensors="pt")
-        text_inputs = processor(text=nsfw_prompts + safe_prompts, return_tensors="pt", padding=True)
-        
-        with torch.no_grad():
-            image_features = model.get_image_features(**inputs)
-            text_features = model.get_text_features(**text_inputs)
-            
-            image_features = image_features / image_features.norm(dim=-1, keepdim=True)
-            text_features = text_features / text_features.norm(dim=-1, keepdim=True)
-            
-            similarities = (image_features @ text_features.T).squeeze()
-        
-        nsfw_sim = similarities[:len(nsfw_prompts)].max().item()
-        safe_sim = similarities[len(nsfw_prompts):].max().item()
-        is_nsfw = nsfw_sim > safe_sim and nsfw_sim > $threshold
-        
-        return {
-            'index': frame_info['index'],
-            'timestamp': frame_info['timestamp'],
-            'path': frame_info['path'],
-            'isNSFW': is_nsfw
-        }
-    except Exception as e:
-        return {
-            'index': frame_info['index'],
-            'timestamp': frame_info['timestamp'],
-            'path': frame_info['path'],
-            'isNSFW': False
-        }
-''';
-        break;
-    }
-
-    return '''
-import json
-import multiprocessing
-from pathlib import Path
-
-$detectorCode
-
-def update_progress(completed):
-    try:
-        with open(${pyPath(progressPath)}, 'w') as f:
-            f.write(str(completed))
-    except:
-        pass
-
-def worker_wrapper(args):
-    frame_info, progress_queue = args
-    result = analyze_frame(frame_info)
-    progress_queue.put(1)
-    return result
-
-if __name__ == '__main__':
-    frames = $frameListJson
-    
-    # Create progress file
-    update_progress(0)
-    
-    # Use multiprocessing Pool
-    manager = multiprocessing.Manager()
-    progress_queue = manager.Queue()
-    
-    # Prepare arguments with progress queue
-    args = [(frame, progress_queue) for frame in frames]
-    
-    # Track progress in background
-    completed = 0
-    
-    with multiprocessing.Pool(processes=$numThreads) as pool:
-        results = []
-        async_results = pool.map_async(worker_wrapper, args)
-        
-        # Update progress while waiting
-        while not async_results.ready():
-            try:
-                while not progress_queue.empty():
-                    progress_queue.get()
-                    completed += 1
-                    update_progress(completed)
-            except:
-                pass
-            async_results.wait(0.5)
-        
-        results = async_results.get()
-    
-    # Write results
-    with open(${pyPath(resultPath)}, 'w') as f:
-        json.dump(results, f)
-    
-    update_progress(len(frames))
-''';
   }
 
   void generateSkipTimestamps() {
