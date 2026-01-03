@@ -44,10 +44,15 @@ flutter:
     - assets/ffmpeg/presets/libvpx-1080p50_60.ffpreset
 
 msix_config:
-  display_name: PGPlayer
-  publisher_display_name: MuhammadIbrahimNasir
-  identity_name: com.mibrahimnasir.pgplayer
+  display_name: PG Player
+  publisher_display_name: Eclectisoft
+
+  identity_name: Eclectisoft.PGPlayer
+  publisher: CN=0D201C07-2EE2-4B88-BEE4-41AEC65BE3EC
+
   msix_version: 1.0.0.0
-  logo_path: assets/icon.png
-  capabilities: internetClient
   store: true
+
+  capabilities: internetClient
+  logo_path: assets/icon.png
+
