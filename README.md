@@ -73,29 +73,23 @@ Note: If requirements.txt doesn't exist, you may need to:
 3. Run the Flutter Application
 bash
 
-flutter run
+[flutter run]
 
 Alternative Flutter Run Options:
 
     Run on a specific device:
     bash
 
-flutter run -d device_id
 
 Run in release mode:
 bash
 
 flutter run --release
 
-Run for web (if configured):
-bash
-
-flutter run -d chrome
-
 Common Issues and Solutions
 Virtual Environment Issues
 
-Problem: python3 -m venv venv fails
+Problem: python3 -m venv .venv fails
 Solution: Install venv module
 bash
 
