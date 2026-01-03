@@ -1247,46 +1247,6 @@ if __name__ == '__main__':
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Detection Model:',
-                  style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                ),
-                const SizedBox(height: 10),
-                RadioListTile<String>(
-                  title: const Text('NudeNet'),
-                  subtitle: const Text('Fast, detects explicit nudity'),
-                  value: 'nudenet',
-                  groupValue: tempDetector,
-                  onChanged: (value) {
-                    setDialogState(() {
-                      tempDetector = value!;
-                    });
-                  },
-                ),
-                RadioListTile<String>(
-                  title: const Text('NSFW Detector'),
-                  subtitle: const Text('Balanced, detects porn/hentai/sexy'),
-                  value: 'nsfw_model',
-                  groupValue: tempDetector,
-                  onChanged: (value) {
-                    setDialogState(() {
-                      tempDetector = value!;
-                    });
-                  },
-                ),
-                RadioListTile<String>(
-                  title: const Text('CLIP Interrogator'),
-                  subtitle: const Text(
-                    'Most sensitive, catches subtle content',
-                  ),
-                  value: 'clip_interrogator',
-                  groupValue: tempDetector,
-                  onChanged: (value) {
-                    setDialogState(() {
-                      tempDetector = value!;
-                    });
-                  },
-                ),
                 const SizedBox(height: 20),
                 const Text(
                   'Sensitivity Threshold:',
