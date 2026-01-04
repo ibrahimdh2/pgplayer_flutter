@@ -267,21 +267,18 @@ class _HomeState extends State<Home> {
         String framePath =
             '${framesDir.path}/frame_${i}_${timestamp.toStringAsFixed(0)}.jpg';
         frameTasks.add({'index': i, 'timestamp': timestamp, 'path': framePath});
-
-        await Process.run(
-          "/home/ibrahim/Documents/pgplayer_flutter/assets/ffmpeg/bin/ffmpeg",
-          [
-            '-ss',
-            timestamp.toString(),
-            '-i',
-            videoPath!,
-            '-vframes',
-            '1',
-            '-q:v',
-            '2',
-            framePath,
-          ],
-        );
+        await Process.run('chmod', ['+x', ffmpegPath]);
+        await Process.run(ffmpegPath, [
+          '-ss',
+          timestamp.toString(),
+          '-i',
+          videoPath!,
+          '-vframes',
+          '1',
+          '-q:v',
+          '2',
+          framePath,
+        ]);
 
         setState(() {
           currentFrameNumber = i + 1;
@@ -394,11 +391,13 @@ class _HomeState extends State<Home> {
     print('Running detector: $pythonExePath');
     print('Input JSON: $inputJsonPath');
     print('Output path: $resultPath');
-
-    ProcessResult result = await Process.run(
-      "/home/ibrahim/Documents/pgplayer_flutter/assets/detector",
-      ['--input', inputJsonPath, '--output', resultPath],
-    );
+    await Process.run('chmod', ['+x', pythonExePath]);
+    ProcessResult result = await Process.run(pythonExePath, [
+      '--input',
+      inputJsonPath,
+      '--output',
+      resultPath,
+    ]);
 
     // Stop progress monitoring
     progressUpdateTimer?.cancel();
