@@ -1,12 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import os
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
+
+# Collect all nudenet data files
+nudenet_datas = collect_data_files('nudenet')
 
 a = Analysis(
     ['detector.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=nudenet_datas,  # This will include the model file
+    hiddenimports=['nudenet', 'onnxruntime'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -14,6 +19,7 @@ a = Analysis(
     noarchive=False,
     optimize=0,
 )
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
