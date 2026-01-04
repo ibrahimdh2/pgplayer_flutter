@@ -44,7 +44,7 @@ flutter:
     - assets/ffmpeg/presets/libvpx-1080p50_60.ffpreset
 
 msix_config:
-  display_name: PG Player
+  display_name: PGPlayer
   publisher_display_name: Eclectisoft
 
   identity_name: Eclectisoft.PGPlayer
