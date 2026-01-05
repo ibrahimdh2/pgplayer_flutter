@@ -50,7 +50,7 @@ msix_config:
   identity_name: Eclectisoft.PGPlayer
   publisher: CN=0D201C07-2EE2-4B88-BEE4-41AEC65BE3EC
 
-  msix_version: 1.0.0.0
+  msix_version: 1.1.0.0
   store: true
 
   capabilities: internetClient
