@@ -30,18 +30,18 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
-    # - assets/detector.exe
-    # - assets/icon.png
-    # - assets/ffmpeg/
-    # - assets/ffmpeg/bin/
-    # - assets/ffmpeg/bin/ffmpeg.exe
-    # - assets/ffmpeg/bin/ffplay.exe
-    # - assets/ffmpeg/bin/ffprobe.exe
-    # - assets/ffmpeg/presets/libvpx-360p.ffpreset
-    # - assets/ffmpeg/presets/libvpx-720p.ffpreset
-    # - assets/ffmpeg/presets/libvpx-720p50_60.ffpreset
-    # - assets/ffmpeg/presets/libvpx-1080p.ffpreset
-    # - assets/ffmpeg/presets/libvpx-1080p50_60.ffpreset
+    - assets/detector.exe
+    - assets/icon.png
+    - assets/ffmpeg/
+    - assets/ffmpeg/bin/
+    - assets/ffmpeg/bin/ffmpeg.exe
+    - assets/ffmpeg/bin/ffplay.exe
+    - assets/ffmpeg/bin/ffprobe.exe
+    - assets/ffmpeg/presets/libvpx-360p.ffpreset
+    - assets/ffmpeg/presets/libvpx-720p.ffpreset
+    - assets/ffmpeg/presets/libvpx-720p50_60.ffpreset
+    - assets/ffmpeg/presets/libvpx-1080p.ffpreset
+    - assets/ffmpeg/presets/libvpx-1080p50_60.ffpreset
 
 msix_config:
   display_name: PGPlayer
