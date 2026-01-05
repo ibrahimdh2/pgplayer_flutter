@@ -1,5 +1,3 @@
-
-/ ============================================================================
 import 'dart:convert';
 import 'dart:io';
 import 'dart:async';
@@ -17,7 +15,7 @@ class NSFWScanner {
   }) async {
     final tempDir = await getTemporaryDirectory();
     final framesDir = Directory('${tempDir.path}/frames');
-    
+
     if (await framesDir.exists()) {
       await framesDir.delete(recursive: true);
     }
@@ -41,11 +39,7 @@ class NSFWScanner {
       double timestamp = i * intervalSeconds.toDouble();
       String framePath =
           '${framesDir.path}/frame_${i}_${timestamp.toStringAsFixed(0)}.jpg';
-      frameTasks.add({
-        'index': i,
-        'timestamp': timestamp,
-        'path': framePath,
-      });
+      frameTasks.add({'index': i, 'timestamp': timestamp, 'path': framePath});
 
       await Process.run(ffmpegPath, [
         '-ss',
@@ -70,7 +64,11 @@ class NSFWScanner {
       sensitivityThreshold: sensitivityThreshold,
       parallelThreads: parallelThreads,
       onProgress: (processed) {
-        onProgress(processed, totalFrames, 0.5 + (processed / totalFrames * 0.5));
+        onProgress(
+          processed,
+          totalFrames,
+          0.5 + (processed / totalFrames * 0.5),
+        );
       },
     );
 
@@ -129,21 +127,20 @@ class NSFWScanner {
     }
 
     // Start progress monitoring
-    Timer? progressTimer = Timer.periodic(
-      const Duration(milliseconds: 500),
-      (timer) async {
-        try {
-          final progressFile = File(progressPath);
-          if (await progressFile.exists()) {
-            String content = await progressFile.readAsString();
-            int processed = int.tryParse(content.trim()) ?? 0;
-            onProgress(processed);
-          }
-        } catch (e) {
-          // Ignore errors
+    Timer? progressTimer = Timer.periodic(const Duration(milliseconds: 500), (
+      timer,
+    ) async {
+      try {
+        final progressFile = File(progressPath);
+        if (await progressFile.exists()) {
+          String content = await progressFile.readAsString();
+          int processed = int.tryParse(content.trim()) ?? 0;
+          onProgress(processed);
         }
-      },
-    );
+      } catch (e) {
+        // Ignore errors
+      }
+    });
 
     ProcessResult result = await Process.run(pythonExePath, [
       '--input',
@@ -183,8 +180,5 @@ class ScanResult {
   final List<Map<String, dynamic>> detectedScenes;
   final int totalFramesScanned;
 
-  ScanResult({
-    required this.detectedScenes,
-    required this.totalFramesScanned,
-  });
+  ScanResult({required this.detectedScenes, required this.totalFramesScanned});
 }

@@ -497,160 +497,246 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  List<PopupMenuEntry<String>> _buildMenuItems() {
-    return [
-      // FILE MENU
-      _buildMenuHeader('📁 FILE'),
-      _buildMenuItem(
-        'open_video',
-        Icons.folder_open,
-        'Open Video',
-        _pickAndLoadVideo,
-      ),
-      const PopupMenuDivider(),
+  void _showNSFWSubmenu({required Offset position}) {
+    Navigator.pop(context);
 
-      // SUBTITLES MENU
-      _buildMenuHeader('💬 SUBTITLES'),
-      _buildMenuItem(
-        'add_subtitle',
-        Icons.closed_caption,
-        'Add Subtitle',
-        _pickAndLoadSubtitle,
+    final RenderBox overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final center = overlay.size.center(Offset.zero);
+
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        center & const Size(40, 40),
+        Offset.zero & overlay.size,
       ),
-      if (state.subtitlePath != null)
+      color: Colors.grey[900],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      elevation: 8,
+      items: [
+        _buildMenuHeader('🛡️ NSFW DETECTION'),
         _buildMenuItem(
-          'toggle_subtitle',
-          state.showSubtitles ? Icons.subtitles : Icons.subtitles_off,
-          state.showSubtitles ? 'Hide Subtitles (S)' : 'Show Subtitles (S)',
-          _toggleSubtitles,
+          'scan_nsfw',
+          Icons.search,
+          'Start Scan',
+          _scanVideoForNSFW,
         ),
-      if (state.subtitlePath != null)
+        const PopupMenuDivider(),
         _buildMenuItem(
-          'remove_subtitle',
-          Icons.close,
-          'Remove Subtitle',
-          _removeSubtitles,
+          'skip_mode',
+          state.autoSkipEnabled
+              ? Icons.check_circle
+              : Icons.radio_button_unchecked,
+          state.autoSkipEnabled
+              ? 'Auto-Skip (Enabled)'
+              : 'Auto-Skip (Disabled)',
+          () => SettingsDialogs.showSkipModeDialog(
+            context,
+            state.autoSkipEnabled,
+            (value) {
+              setState(() {
+                state = state.copyWith(autoSkipEnabled: value);
+              });
+            },
+          ),
         ),
-      const PopupMenuDivider(),
+        _buildMenuItem(
+          'detector_settings',
+          Icons.tune,
+          'Detection Settings',
+          () => SettingsDialogs.showDetectorSettingsDialog(
+            context,
+            state.selectedDetector,
+            state.sensitivityThreshold,
+            (detector, threshold) {
+              setState(() {
+                state = state.copyWith(
+                  selectedDetector: detector,
+                  sensitivityThreshold: threshold,
+                );
+              });
+            },
+          ),
+        ),
+        _buildMenuItem(
+          'threads',
+          Icons.memory,
+          'Threads: ${state.parallelThreads}',
+          () => SettingsDialogs.showThreadsDialog(
+            context,
+            state.parallelThreads,
+            (threads) {
+              setState(() {
+                state = state.copyWith(parallelThreads: threads);
+              });
+            },
+          ),
+        ),
+      ],
+    );
+  }
 
-      // NSFW DETECTION
-      _buildMenuHeader('🛡️ NSFW DETECTION'),
-      _buildMenuItem(
-        'scan_nsfw',
-        Icons.search,
-        'Scan for NSFW Scenes',
-        _scanVideoForNSFW,
+  void _showSubtitlesSubmenu({required Offset position}) {
+    Navigator.pop(context); // Close main menu
+
+    final RenderBox overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final center = overlay.size.center(Offset.zero);
+
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        center & const Size(40, 40),
+        Offset.zero & overlay.size,
       ),
-      _buildMenuItem(
-        'skip_mode',
-        state.autoSkipEnabled ? Icons.fast_forward : Icons.warning_amber,
-        state.autoSkipEnabled ? 'Mode: Auto-Skip' : 'Mode: Warn Only',
-        () => SettingsDialogs.showSkipModeDialog(
-          context,
-          state.autoSkipEnabled,
-          (value) {
+      color: Colors.grey[900],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      elevation: 8,
+      items: [
+        _buildMenuHeader('💬 SUBTITLES'),
+        _buildMenuItem(
+          'add_subtitle',
+          Icons.add,
+          'Add Subtitle File',
+          _pickAndLoadSubtitle,
+        ),
+        if (state.subtitlePath != null) ...[
+          const PopupMenuDivider(),
+          _buildMenuItem(
+            'toggle_subtitle',
+            state.showSubtitles ? Icons.visibility_off : Icons.visibility,
+            state.showSubtitles ? 'Hide Subtitles (S)' : 'Show Subtitles (S)',
+            _toggleSubtitles,
+          ),
+          _buildMenuItem(
+            'remove_subtitle',
+            Icons.delete,
+            'Remove Subtitle',
+            _removeSubtitles,
+          ),
+        ],
+      ],
+    );
+  }
+
+  void _showPlaybackSubmenu({required Offset position}) {
+    Navigator.pop(context);
+
+    final RenderBox overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final center = overlay.size.center(Offset.zero);
+
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        center & const Size(40, 40),
+        Offset.zero & overlay.size,
+      ),
+      color: Colors.grey[900],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      elevation: 8,
+      items: [
+        _buildMenuHeader('⚙️ PLAYBACK SETTINGS'),
+        _buildMenuItem(
+          'speed',
+          Icons.speed,
+          'Speed: ${state.playbackSpeed}x',
+          () => SettingsDialogs.showSpeedDialog(context, state.playbackSpeed, (
+            speed,
+          ) async {
+            await videoService.setPlaybackRate(speed);
             setState(() {
-              state = state.copyWith(autoSkipEnabled: value);
+              state = state.copyWith(playbackSpeed: speed);
             });
-          },
+          }),
         ),
-      ),
-      _buildMenuItem(
-        'detector_settings',
-        Icons.settings,
-        'Detection Settings',
-        () => SettingsDialogs.showDetectorSettingsDialog(
-          context,
-          state.selectedDetector,
-          state.sensitivityThreshold,
-          (detector, threshold) {
-            setState(() {
-              state = state.copyWith(
-                selectedDetector: detector,
-                sensitivityThreshold: threshold,
-              );
-            });
-          },
+        const PopupMenuDivider(),
+        _buildMenuItem(
+          'gpu_acceleration',
+          state.hardwareAcceleration
+              ? Icons.check_box
+              : Icons.check_box_outline_blank,
+          'GPU Acceleration',
+          _toggleGPUAcceleration,
         ),
-      ),
-      const PopupMenuDivider(),
+      ],
+    );
+  }
 
-      // SKIP MANAGEMENT
-      _buildMenuHeader('⏭️ SKIP MANAGEMENT'),
-      _buildMenuItem(
-        'view_skips',
-        Icons.list,
-        'View Skips',
-        () => InfoDialogs.showSkipsDialog(context, state.skipTimestamps),
-      ),
-      _buildMenuItem(
-        'load_skips',
-        Icons.file_upload,
-        'Load Skip JSON',
-        _loadSkipJSON,
-      ),
-      _buildMenuItem(
-        'export_json',
-        Icons.download,
-        'Export Skip JSON',
-        _exportSkipJSON,
-      ),
-      const PopupMenuDivider(),
+  // Info & Help Submenu
+  void _showInfoSubmenu({required Offset position}) {
+    Navigator.pop(context);
 
-      // PLAYBACK
-      _buildMenuHeader('⚙️ PLAYBACK'),
-      _buildMenuItem(
-        'speed',
-        Icons.speed,
-        'Speed: ${state.playbackSpeed}x',
-        () => SettingsDialogs.showSpeedDialog(context, state.playbackSpeed, (
-          speed,
-        ) async {
-          await videoService.setPlaybackRate(speed);
-          setState(() {
-            state = state.copyWith(playbackSpeed: speed);
-          });
+    final RenderBox overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final center = overlay.size.center(Offset.zero);
+
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        center & const Size(40, 40),
+        Offset.zero & overlay.size,
+      ),
+      color: Colors.grey[900],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      elevation: 8,
+      items: [
+        _buildMenuHeader('ℹ️ INFO & HELP'),
+        _buildMenuItem(
+          'keyboard_shortcuts',
+          Icons.keyboard,
+          'Keyboard Shortcuts',
+          () => InfoDialogs.showKeyboardShortcuts(context),
+        ),
+        _buildMenuItem(
+          'imdb_guide',
+          Icons.movie,
+          'IMDB Parental Guide',
+          () =>
+              InfoDialogs.showIMDBParentalGuideDialog(context, state.videoPath),
+        ),
+        const PopupMenuDivider(),
+        _buildMenuItem('about', Icons.info, 'About PGPlayer', () {
+          showDialog(
+            context: context,
+            builder: (context) => AlertDialog(
+              title: const Text('About PGPlayer'),
+              content: const Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'PGPlayer',
+                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
+                  ),
+                  SizedBox(height: 8),
+                  Text('Version 1.0.0'),
+                  SizedBox(height: 16),
+                  Text(
+                    'A parental guidance video player with AI-powered NSFW scene detection.',
+                  ),
+                  SizedBox(height: 16),
+                  Text(
+                    'Features:',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  Text('• NSFW scene detection'),
+                  Text('• Auto-skip functionality'),
+                  Text('• Subtitle support'),
+                  Text('• Keyboard shortcuts'),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Close'),
+                ),
+              ],
+            ),
+          );
         }),
-      ),
-      _buildMenuItem(
-        'gpu_acceleration',
-        state.hardwareAcceleration
-            ? Icons.check_box
-            : Icons.check_box_outline_blank,
-        'GPU Acceleration',
-        _toggleGPUAcceleration,
-      ),
-      _buildMenuItem(
-        'threads',
-        Icons.memory,
-        'Processing Threads: ${state.parallelThreads}',
-        () => SettingsDialogs.showThreadsDialog(
-          context,
-          state.parallelThreads,
-          (threads) {
-            setState(() {
-              state = state.copyWith(parallelThreads: threads);
-            });
-          },
-        ),
-      ),
-      const PopupMenuDivider(),
-
-      // INFO
-      _buildMenuHeader('ℹ️ INFO'),
-      _buildMenuItem(
-        'imdb_guide',
-        Icons.info_outline,
-        'IMDB Parental Guide',
-        () => InfoDialogs.showIMDBParentalGuideDialog(context, state.videoPath),
-      ),
-      _buildMenuItem(
-        'keyboard_shortcuts',
-        Icons.keyboard,
-        'Keyboard Shortcuts',
-        () => InfoDialogs.showKeyboardShortcuts(context),
-      ),
-    ];
+      ],
+    );
   }
 
   PopupMenuItem<String> _buildMenuHeader(String text) {
@@ -668,6 +754,147 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  void _showSkipManagementSubmenu({required Offset position}) {
+    Navigator.pop(context);
+
+    final RenderBox overlay =
+        Overlay.of(context).context.findRenderObject() as RenderBox;
+    final center = overlay.size.center(Offset.zero);
+
+    showMenu<String>(
+      context: context,
+      position: RelativeRect.fromRect(
+        center & const Size(40, 40),
+        Offset.zero & overlay.size,
+      ),
+      color: Colors.grey[900],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      elevation: 8,
+      items: [
+        _buildMenuHeader('⏭️ SKIP MANAGEMENT'),
+        _buildMenuItem(
+          'view_skips',
+          Icons.list,
+          'View All Skips',
+          () => InfoDialogs.showSkipsDialog(context, state.skipTimestamps),
+        ),
+        const PopupMenuDivider(),
+        _buildMenuItem(
+          'load_skips',
+          Icons.upload_file,
+          'Load Skip JSON',
+          _loadSkipJSON,
+        ),
+        _buildMenuItem(
+          'export_json',
+          Icons.download,
+          'Export Skip JSON',
+          _exportSkipJSON,
+        ),
+        if (state.skipTimestamps.isNotEmpty) ...[
+          const PopupMenuDivider(),
+          _buildMenuItem('clear_skips', Icons.clear_all, 'Clear All Skips', () {
+            setState(() {
+              state = state.copyWith(skipTimestamps: {});
+            });
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('All skips cleared')));
+          }),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildSubmenuTrigger(IconData icon, String text, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+        child: Row(
+          children: [
+            Icon(icon, size: 20, color: Colors.white),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                text,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+              ),
+            ),
+            const Icon(Icons.arrow_right, size: 20, color: Colors.white70),
+          ],
+        ),
+      ),
+    );
+  }
+
+  List<PopupMenuEntry<String>> _buildMenuItems() {
+    return [
+      // Open Video (main level)
+      _buildMenuItem(
+        'open_video',
+        Icons.folder_open,
+        'Open Video',
+        _pickAndLoadVideo,
+      ),
+      const PopupMenuDivider(),
+
+      // Subtitles Submenu
+      PopupMenuItem<String>(
+        enabled: false,
+        child: _buildSubmenuTrigger(
+          Icons.closed_caption,
+          'Subtitles',
+          () => _showSubtitlesSubmenu(position: Offset.zero),
+        ),
+      ),
+      const PopupMenuDivider(),
+
+      // NSFW Detection Submenu
+      PopupMenuItem<String>(
+        enabled: false,
+        child: _buildSubmenuTrigger(
+          Icons.shield,
+          'NSFW Detection',
+          () => _showNSFWSubmenu(position: Offset.zero),
+        ),
+      ),
+      const PopupMenuDivider(),
+
+      // Skip Management Submenu
+      PopupMenuItem<String>(
+        enabled: false,
+        child: _buildSubmenuTrigger(
+          Icons.skip_next,
+          'Skip Management',
+          () => _showSkipManagementSubmenu(position: Offset.zero),
+        ),
+      ),
+      const PopupMenuDivider(),
+
+      // Playback Settings Submenu
+      PopupMenuItem<String>(
+        enabled: false,
+        child: _buildSubmenuTrigger(
+          Icons.settings,
+          'Playback Settings',
+          () => _showPlaybackSubmenu(position: Offset.zero),
+        ),
+      ),
+      const PopupMenuDivider(),
+
+      // Info Submenu
+      PopupMenuItem<String>(
+        enabled: false,
+        child: _buildSubmenuTrigger(
+          Icons.info_outline,
+          'Info & Help',
+          () => _showInfoSubmenu(position: Offset.zero),
+        ),
+      ),
+    ];
   }
 
   PopupMenuItem<String> _buildMenuItem(

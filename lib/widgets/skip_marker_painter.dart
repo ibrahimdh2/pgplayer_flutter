@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:pgplayer_flutter/models/app_state.dart';
 import '../utils/time_formatter.dart';
 
 class SkipMarkerPainter extends CustomPainter {
