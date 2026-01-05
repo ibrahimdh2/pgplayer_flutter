@@ -13,36 +13,7 @@ import 'package:path/path.dart' as path;
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
-
-  // Extract bundled assets on first run
-
   runApp(const MyApp());
-}
-
-/// Extracts detector.exe and ffmpeg folder from assets to project root
-
-/// Helper function to extract a single file from assets
-Future<void> _extractFile({
-  required String assetPath,
-  required String targetPath,
-}) async {
-  try {
-    // Create parent directories if they don't exist
-    final targetFile = File(targetPath);
-    await targetFile.parent.create(recursive: true);
-
-    // Load asset as bytes
-    final ByteData data = await rootBundle.load(assetPath);
-    final List<int> bytes = data.buffer.asUint8List();
-
-    // Write to target location
-    await targetFile.writeAsBytes(bytes);
-
-    print('Extracted: $assetPath -> $targetPath');
-  } catch (e) {
-    print('Failed to extract $assetPath: $e');
-    rethrow;
-  }
 }
 
 class MyApp extends StatelessWidget {
@@ -64,6 +35,7 @@ class Home extends StatefulWidget {
 class _HomeState extends State<Home> {
   late final Player player;
   late final VideoController controller;
+  final FocusNode _focusNode = FocusNode();
 
   bool isPlaying = false;
   double currentTime = 0.0;
@@ -73,6 +45,7 @@ class _HomeState extends State<Home> {
   Timer? hideControlsTimer;
   Timer? skipCheckTimer;
   String? videoPath;
+  String? subtitlePath;
   bool isInitialized = false;
   bool isScanning = false;
   double scanProgress = 0.0;
@@ -87,6 +60,7 @@ class _HomeState extends State<Home> {
   bool autoSkipEnabled = true;
   bool _isHovering = false;
   int parallelThreads = 4;
+  bool showSubtitles = true;
 
   Map<String, String> skipTimestamps = {};
   List<Map<String, dynamic>> detectedScenes = [];
@@ -125,6 +99,11 @@ class _HomeState extends State<Home> {
     });
 
     startSkipCheckTimer();
+
+    // Request focus on init
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _focusNode.requestFocus();
+    });
   }
 
   void _initializeController() {
@@ -149,6 +128,12 @@ class _HomeState extends State<Home> {
 
     if (currentPath != null) {
       await player.open(Media(currentPath));
+
+      // Reload subtitle if exists
+      if (subtitlePath != null) {
+        await _loadSubtitleFile(subtitlePath!);
+      }
+
       await player.seek(currentPosition);
       if (wasPlaying) {
         await player.play();
@@ -165,8 +150,38 @@ class _HomeState extends State<Home> {
     hideControlsTimer?.cancel();
     skipCheckTimer?.cancel();
     progressUpdateTimer?.cancel();
+    _focusNode.dispose();
     player.dispose();
     super.dispose();
+  }
+
+  // Keyboard event handler
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent) {
+      if (event.logicalKey == LogicalKeyboardKey.space) {
+        togglePlayPause();
+        return KeyEventResult.handled;
+      } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+        stepBackward();
+        return KeyEventResult.handled;
+      } else if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+        stepForward();
+        return KeyEventResult.handled;
+      } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+        // Volume up (if you implement volume control)
+        return KeyEventResult.handled;
+      } else if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+        // Volume down (if you implement volume control)
+        return KeyEventResult.handled;
+      } else if (event.logicalKey == LogicalKeyboardKey.keyF) {
+        // Toggle fullscreen (if implemented)
+        return KeyEventResult.handled;
+      } else if (event.logicalKey == LogicalKeyboardKey.keyS) {
+        toggleSubtitles();
+        return KeyEventResult.handled;
+      }
+    }
+    return KeyEventResult.ignored;
   }
 
   Future<void> pickAndLoadVideo() async {
@@ -212,7 +227,84 @@ class _HomeState extends State<Home> {
     }
   }
 
-  // Multi-threaded video scanning with Python multiprocessing
+  // Subtitle loading
+  Future<void> pickAndLoadSubtitle() async {
+    try {
+      FilePickerResult? result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['srt', 'vtt', 'ass', 'ssa'],
+        allowMultiple: false,
+      );
+
+      if (result != null && result.files.single.path != null) {
+        String path = result.files.single.path!;
+        await _loadSubtitleFile(path);
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error picking subtitle: $e')));
+      }
+    }
+  }
+
+  Future<void> _loadSubtitleFile(String path) async {
+    try {
+      await player.setSubtitleTrack(SubtitleTrack.uri(path));
+
+      setState(() {
+        subtitlePath = path;
+        showSubtitles = true;
+      });
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Subtitle loaded successfully!')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error loading subtitle: $e')));
+      }
+    }
+  }
+
+  void toggleSubtitles() {
+    setState(() {
+      showSubtitles = !showSubtitles;
+    });
+
+    if (showSubtitles && subtitlePath != null) {
+      player.setSubtitleTrack(SubtitleTrack.uri(subtitlePath!));
+    } else {
+      player.setSubtitleTrack(SubtitleTrack.no());
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          showSubtitles ? 'Subtitles enabled' : 'Subtitles disabled',
+        ),
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
+
+  void removeSubtitles() {
+    player.setSubtitleTrack(SubtitleTrack.no());
+    setState(() {
+      subtitlePath = null;
+      showSubtitles = false;
+    });
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Subtitles removed')));
+  }
+
   Future<void> scanVideoForNSFW() async {
     if (videoPath == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -253,7 +345,6 @@ class _HomeState extends State<Home> {
         ),
       );
 
-      // Use extracted ffmpeg from project root
       final executableDir = File(Platform.resolvedExecutable).parent.path;
       final ffmpegPath = path.join(
         executableDir,
@@ -263,7 +354,6 @@ class _HomeState extends State<Home> {
         'ffmpeg.exe',
       );
 
-      // Step 1: Extract all frames first
       List<Map<String, dynamic>> frameTasks = [];
       for (int i = 0; i < totalFrames; i++) {
         double timestamp = i * intervalSeconds.toDouble();
@@ -285,12 +375,10 @@ class _HomeState extends State<Home> {
 
         setState(() {
           currentFrameNumber = i + 1;
-          scanProgress =
-              (i + 1) / (totalFrames * 2); // First half is extraction
+          scanProgress = (i + 1) / (totalFrames * 2);
         });
       }
 
-      // Step 2: Process all frames with Python multiprocessing
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -305,7 +393,6 @@ class _HomeState extends State<Home> {
         framesDir.path,
       );
 
-      // Collect NSFW scenes
       for (var result in results) {
         if (result['isNSFW'] == true) {
           detectedScenes.add({
@@ -350,12 +437,10 @@ class _HomeState extends State<Home> {
     }
   }
 
-  // Use Python multiprocessing for true parallel AI detection
   Future<List<Map<String, dynamic>>> _analyzeBatchWithPython(
     List<Map<String, dynamic>> frameTasks,
     String framesDir,
   ) async {
-    // Use extracted detector.exe from project root
     final executableDir = File(Platform.resolvedExecutable).parent.path;
     final pythonExePath = path.join(
       executableDir,
@@ -367,10 +452,8 @@ class _HomeState extends State<Home> {
     final resultPath = '$framesDir/results.json';
     final progressPath = '$framesDir/progress.txt';
 
-    // Inverted threshold for correct sensitivity
     double actualThreshold = 1.0 - sensitivityThreshold;
 
-    // Create input JSON for the Python executable
     Map<String, dynamic> inputData = {
       'frames': frameTasks,
       'detector': selectedDetector,
@@ -382,15 +465,12 @@ class _HomeState extends State<Home> {
 
     await File(inputJsonPath).writeAsString(jsonEncode(inputData));
 
-    // Verify input file was created
     if (!await File(inputJsonPath).exists()) {
       throw Exception('Failed to create input JSON file');
     }
 
-    // Start progress monitoring
     _startProgressMonitoring(progressPath, frameTasks.length);
 
-    // Run the standalone Python executable
     print('Running detector: $pythonExePath');
     print('Input JSON: $inputJsonPath');
     print('Output path: $resultPath');
@@ -402,10 +482,8 @@ class _HomeState extends State<Home> {
       resultPath,
     ]);
 
-    // Stop progress monitoring
     progressUpdateTimer?.cancel();
 
-    // Print output for debugging
     print('Exit code: ${result.exitCode}');
     print('STDOUT: ${result.stdout}');
     print('STDERR: ${result.stderr}');
@@ -416,10 +494,8 @@ class _HomeState extends State<Home> {
       );
     }
 
-    // Read results
     final resultsFile = File(resultPath);
     if (!await resultsFile.exists()) {
-      // Check if input file still exists
       final inputExists = await File(inputJsonPath).exists();
       throw Exception(
         'Results file not found at: $resultPath\n'
@@ -454,7 +530,6 @@ class _HomeState extends State<Home> {
           if (mounted) {
             setState(() {
               currentFrameNumber = processed;
-              // Second half of progress is analysis
               scanProgress = 0.5 + (processed / totalFrames * 0.5);
             });
           }
@@ -683,7 +758,6 @@ class _HomeState extends State<Home> {
                   return;
                 }
 
-                // Create Google search URL for parents guide
                 String googleSearchUrl =
                     'https://www.google.com/search?q=${Uri.encodeComponent('$searchQuery Parents Guide')}';
 
@@ -888,13 +962,157 @@ class _HomeState extends State<Home> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       elevation: 8,
       items: <PopupMenuEntry<String>>[
+        // FILE MENU
+        const PopupMenuItem<String>(
+          enabled: false,
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              '📁 FILE',
+              style: TextStyle(
+                color: Colors.white70,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ),
         _buildMenuItem(
           'open_video',
           Icons.folder_open,
-          'Open Video File',
+          'Open Video',
           pickAndLoadVideo,
         ),
         const PopupMenuDivider(),
+
+        // SUBTITLES MENU
+        const PopupMenuItem<String>(
+          enabled: false,
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              '💬 SUBTITLES',
+              style: TextStyle(
+                color: Colors.white70,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ),
+        _buildMenuItem(
+          'add_subtitle',
+          Icons.closed_caption,
+          'Add Subtitle',
+          pickAndLoadSubtitle,
+        ),
+        if (subtitlePath != null)
+          _buildMenuItem(
+            'toggle_subtitle',
+            showSubtitles ? Icons.subtitles : Icons.subtitles_off,
+            showSubtitles ? 'Hide Subtitles (S)' : 'Show Subtitles (S)',
+            toggleSubtitles,
+          ),
+        if (subtitlePath != null)
+          _buildMenuItem(
+            'remove_subtitle',
+            Icons.close,
+            'Remove Subtitle',
+            removeSubtitles,
+          ),
+        const PopupMenuDivider(),
+
+        // NSFW DETECTION MENU
+        const PopupMenuItem<String>(
+          enabled: false,
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              '🛡️ NSFW DETECTION',
+              style: TextStyle(
+                color: Colors.white70,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ),
+        _buildMenuItem(
+          'scan_nsfw',
+          Icons.search,
+          'Scan for NSFW Scenes',
+          scanVideoForNSFW,
+        ),
+        _buildMenuItem(
+          'skip_mode',
+          autoSkipEnabled ? Icons.fast_forward : Icons.warning_amber,
+          autoSkipEnabled ? 'Mode: Auto-Skip' : 'Mode: Warn Only',
+          () => _showSkipModeDialog(context),
+        ),
+        _buildMenuItem(
+          'detector_settings',
+          Icons.settings,
+          'Detection Settings',
+          () => _showDetectorSettingsDialog(context),
+        ),
+        const PopupMenuDivider(),
+
+        // SKIP MANAGEMENT
+        const PopupMenuItem<String>(
+          enabled: false,
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              '⏭️ SKIP MANAGEMENT',
+              style: TextStyle(
+                color: Colors.white70,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ),
+        _buildMenuItem(
+          'view_skips',
+          Icons.list,
+          'View Skips',
+          () => _showSkipsDialog(context),
+        ),
+        _buildMenuItem(
+          'load_skips',
+          Icons.file_upload,
+          'Load Skip JSON',
+          () => _showLoadSkipsDialog(context),
+        ),
+        _buildMenuItem(
+          'export_json',
+          Icons.download,
+          'Export Skip JSON',
+          exportSkipJSON,
+        ),
+        const PopupMenuDivider(),
+
+        // PLAYBACK SETTINGS
+        const PopupMenuItem<String>(
+          enabled: false,
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              '⚙️ PLAYBACK',
+              style: TextStyle(
+                color: Colors.white70,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+        ),
+        _buildMenuItem(
+          'speed',
+          Icons.speed,
+          'Speed: ${playbackSpeed}x',
+          () => _showSpeedDialog(context),
+        ),
         _buildMenuItem(
           'gpu_acceleration',
           hardwareAcceleration
@@ -926,67 +1144,110 @@ class _HomeState extends State<Home> {
             }
           },
         ),
-        const PopupMenuDivider(),
         _buildMenuItem(
-          'skip_mode',
-          autoSkipEnabled ? Icons.fast_forward : Icons.warning_amber,
-          autoSkipEnabled ? 'Mode: Auto-Skip' : 'Mode: Warn Only',
-          () => _showSkipModeDialog(context),
+          'threads',
+          Icons.memory,
+          'Processing Threads: $parallelThreads',
+          () => _showThreadsDialog(context),
         ),
         const PopupMenuDivider(),
-        _buildMenuItem(
-          'detector_settings',
-          Icons.settings,
-          'Detection Settings',
-          () => _showDetectorSettingsDialog(context),
+
+        // INFO
+        const PopupMenuItem<String>(
+          enabled: false,
+          child: Padding(
+            padding: EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              'ℹ️ INFO',
+              style: TextStyle(
+                color: Colors.white70,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
         ),
-        _buildMenuItem(
-          'scan_nsfw',
-          Icons.search,
-          'Scan for NSFW Scenes',
-          scanVideoForNSFW,
-        ),
-        _buildMenuItem(
-          'export_json',
-          Icons.download,
-          'Export Skip JSON',
-          exportSkipJSON,
-        ),
-        const PopupMenuDivider(),
         _buildMenuItem(
           'imdb_guide',
           Icons.info_outline,
           'IMDB Parental Guide',
           () => openIMDBParentalGuide(),
         ),
-        const PopupMenuDivider(),
         _buildMenuItem(
-          'load_skips',
-          Icons.file_upload,
-          'Load Skip JSON',
-          () => _showLoadSkipsDialog(context),
-        ),
-        _buildMenuItem(
-          'view_skips',
-          Icons.list,
-          'View Skips',
-          () => _showSkipsDialog(context),
-        ),
-        const PopupMenuDivider(),
-        _buildMenuItem(
-          'speed',
-          Icons.speed,
-          'Speed: ${playbackSpeed}x',
-          () => _showSpeedDialog(context),
-        ),
-        const PopupMenuDivider(),
-        _buildMenuItem(
-          'threads',
-          Icons.memory,
-          'Threads: $parallelThreads',
-          () => _showThreadsDialog(context),
+          'keyboard_shortcuts',
+          Icons.keyboard,
+          'Keyboard Shortcuts',
+          () => _showKeyboardShortcuts(context),
         ),
       ],
+    );
+  }
+
+  void _showKeyboardShortcuts(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('⌨️ Keyboard Shortcuts'),
+        content: SizedBox(
+          width: 400,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildShortcutRow('Space', 'Play/Pause'),
+              _buildShortcutRow('← Left Arrow', 'Rewind 10 seconds'),
+              _buildShortcutRow('→ Right Arrow', 'Forward 10 seconds'),
+              _buildShortcutRow('S', 'Toggle Subtitles'),
+              const SizedBox(height: 12),
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: const Text(
+                  '💡 Tip: Right-click anywhere on the video for the full menu',
+                  style: TextStyle(fontSize: 12),
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildShortcutRow(String key, String action) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.grey[200],
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: Colors.grey[400]!),
+            ),
+            child: Text(
+              key,
+              style: const TextStyle(
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+                fontFamily: 'monospace',
+              ),
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(child: Text(action, style: const TextStyle(fontSize: 14))),
+        ],
+      ),
     );
   }
 
@@ -1007,7 +1268,9 @@ class _HomeState extends State<Home> {
           children: [
             Icon(icon, size: 20, color: Colors.white),
             const SizedBox(width: 12),
-            Text(text, style: const TextStyle(color: Colors.white)),
+            Expanded(
+              child: Text(text, style: const TextStyle(color: Colors.white)),
+            ),
           ],
         ),
       ),
@@ -1366,105 +1629,110 @@ class _HomeState extends State<Home> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Stack(
-        children: [
-          _buildPlayer(),
-          if (isScanning)
-            Container(
-              color: Colors.black87,
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const CircularProgressIndicator(
-                      color: Color.fromARGB(255, 82, 176, 132),
-                    ),
-                    const SizedBox(height: 30),
-                    Text(
-                      scanProgress < 0.5
-                          ? 'Extracting frames...'
-                          : 'Analyzing with AI ($parallelThreads threads)...',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
+    return Focus(
+      focusNode: _focusNode,
+      onKeyEvent: _handleKeyEvent,
+      autofocus: true,
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
+          children: [
+            _buildPlayer(),
+            if (isScanning)
+              Container(
+                color: Colors.black87,
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const CircularProgressIndicator(
+                        color: Color.fromARGB(255, 82, 176, 132),
                       ),
-                    ),
-                    const SizedBox(height: 20),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 24,
-                        vertical: 12,
+                      const SizedBox(height: 30),
+                      Text(
+                        scanProgress < 0.5
+                            ? 'Extracting frames...'
+                            : 'Analyzing with AI ($parallelThreads threads)...',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.1),
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Column(
-                        children: [
-                          Text(
-                            'Frame: $currentFrameNumber / $totalFramesToScan',
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 16,
+                      const SizedBox(height: 20),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 24,
+                          vertical: 12,
+                        ),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Column(
+                          children: [
+                            Text(
+                              'Frame: $currentFrameNumber / $totalFramesToScan',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 16,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Using Python multiprocessing with $parallelThreads workers',
-                            style: const TextStyle(
-                              color: Colors.white70,
-                              fontSize: 14,
+                            const SizedBox(height: 8),
+                            Text(
+                              'Using Python multiprocessing with $parallelThreads workers',
+                              style: const TextStyle(
+                                color: Colors.white70,
+                                fontSize: 14,
+                              ),
                             ),
-                          ),
-                          const SizedBox(height: 8),
-                          Text(
-                            'Detected scenes: $detectedScenesCount',
-                            style: TextStyle(
-                              color: detectedScenesCount > 0
-                                  ? Colors.orange
-                                  : Colors.green,
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
+                            const SizedBox(height: 8),
+                            Text(
+                              'Detected scenes: $detectedScenesCount',
+                              style: TextStyle(
+                                color: detectedScenesCount > 0
+                                    ? Colors.orange
+                                    : Colors.green,
+                                fontSize: 14,
+                                fontWeight: FontWeight.bold,
+                              ),
                             ),
-                          ),
-                        ],
+                          ],
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: 350,
-                      child: LinearProgressIndicator(
-                        value: scanProgress,
-                        backgroundColor: Colors.grey[700],
-                        color: const Color.fromARGB(255, 82, 176, 132),
-                        minHeight: 8,
+                      const SizedBox(height: 20),
+                      SizedBox(
+                        width: 350,
+                        child: LinearProgressIndicator(
+                          value: scanProgress,
+                          backgroundColor: Colors.grey[700],
+                          color: const Color.fromARGB(255, 82, 176, 132),
+                          minHeight: 8,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 12),
-                    Text(
-                      '${(scanProgress * 100).toStringAsFixed(1)}%',
-                      style: const TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        fontWeight: FontWeight.bold,
+                      const SizedBox(height: 12),
+                      Text(
+                        '${(scanProgress * 100).toStringAsFixed(1)}%',
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Estimated time: ${_calculateEstimatedTime()}',
-                      style: const TextStyle(
-                        color: Colors.white54,
-                        fontSize: 12,
+                      const SizedBox(height: 8),
+                      Text(
+                        'Estimated time: ${_calculateEstimatedTime()}',
+                        style: const TextStyle(
+                          color: Colors.white54,
+                          fontSize: 12,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -1518,7 +1786,7 @@ class _HomeState extends State<Home> {
                           ),
                           const SizedBox(height: 10),
                           const Text(
-                            'Right-click for menu',
+                            'Right-click for menu • Space to play',
                             style: TextStyle(
                               color: Colors.white54,
                               fontSize: 12,
@@ -1532,26 +1800,50 @@ class _HomeState extends State<Home> {
               Positioned(
                 top: 10,
                 right: 10,
-                child: GestureDetector(
-                  onTap: () {
-                    final RenderBox renderBox =
-                        context.findRenderObject() as RenderBox;
-                    final size = renderBox.size;
-                    showContextMenu(context, Offset(size.width - 50, 50));
-                  },
-                  child: Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: Colors.black87,
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(color: Colors.white24),
+                child: Row(
+                  children: [
+                    if (subtitlePath != null)
+                      GestureDetector(
+                        onTap: toggleSubtitles,
+                        child: Container(
+                          padding: const EdgeInsets.all(12),
+                          margin: const EdgeInsets.only(right: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.black87,
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(color: Colors.white24),
+                          ),
+                          child: Icon(
+                            showSubtitles
+                                ? Icons.subtitles
+                                : Icons.subtitles_off,
+                            color: Colors.white,
+                            size: 24,
+                          ),
+                        ),
+                      ),
+                    GestureDetector(
+                      onTap: () {
+                        final RenderBox renderBox =
+                            context.findRenderObject() as RenderBox;
+                        final size = renderBox.size;
+                        showContextMenu(context, Offset(size.width - 50, 50));
+                      },
+                      child: Container(
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: Colors.black87,
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(color: Colors.white24),
+                        ),
+                        child: const Icon(
+                          Icons.more_vert,
+                          color: Colors.white,
+                          size: 24,
+                        ),
+                      ),
                     ),
-                    child: const Icon(
-                      Icons.more_vert,
-                      color: Colors.white,
-                      size: 24,
-                    ),
-                  ),
+                  ],
                 ),
               ),
             if (skipTimestamps.isNotEmpty && isInitialized && showControls)
@@ -1677,18 +1969,21 @@ class _HomeState extends State<Home> {
                     icon: const Icon(Icons.replay_10),
                     color: Colors.white,
                     iconSize: 28,
+                    tooltip: 'Rewind 10s (←)',
                   ),
                   IconButton(
                     onPressed: togglePlayPause,
                     icon: Icon(isPlaying ? Icons.pause : Icons.play_arrow),
                     color: const Color.fromARGB(255, 82, 176, 132),
                     iconSize: 36,
+                    tooltip: 'Play/Pause (Space)',
                   ),
                   IconButton(
                     onPressed: stepForward,
                     icon: const Icon(Icons.forward_10),
                     color: Colors.white,
                     iconSize: 28,
+                    tooltip: 'Forward 10s (→)',
                   ),
                   const SizedBox(width: 16),
                   Text(
@@ -1699,6 +1994,15 @@ class _HomeState extends State<Home> {
               ),
               Row(
                 children: [
+                  if (subtitlePath != null)
+                    IconButton(
+                      onPressed: toggleSubtitles,
+                      icon: Icon(
+                        showSubtitles ? Icons.subtitles : Icons.subtitles_off,
+                      ),
+                      color: Colors.white,
+                      tooltip: 'Toggle Subtitles (S)',
+                    ),
                   if (skipTimestamps.isNotEmpty)
                     IconButton(
                       onPressed: () => _showSkipsDialog(context),
