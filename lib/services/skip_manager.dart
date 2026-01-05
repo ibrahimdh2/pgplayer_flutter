@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import '../utils/time_formatter.dart';
-import 'package:pgplayer_flutter/models/app_state.dart';
 
 class SkipManager {
   Map<String, String> generateSkipTimestamps(

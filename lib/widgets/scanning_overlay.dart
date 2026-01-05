@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import '../utils/time_formatter.dart';
-import 'package:pgplayer_flutter/models/app_state.dart';
 
 class ScanningOverlay extends StatelessWidget {
   final double scanProgress;
