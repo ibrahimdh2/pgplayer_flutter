@@ -1,4 +1,4 @@
-package com.example.pgplayer_flutter
+package com.example.pgplayer
 
 import io.flutter.embedding.android.FlutterActivity
 

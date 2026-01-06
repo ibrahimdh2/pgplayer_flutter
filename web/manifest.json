@@ -1,6 +1,6 @@
 {
-    "name": "pgplayer_flutter",
-    "short_name": "pgplayer_flutter",
+    "name": "pgplayer",
+    "short_name": "pgplayer",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
