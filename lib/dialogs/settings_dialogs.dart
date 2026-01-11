@@ -192,4 +192,212 @@ class SettingsDialogs {
       ),
     );
   }
+
+  // NEW: Comprehensive NSFW Detection Dialog
+  static void showNSFWDetectionDialog(
+    BuildContext context, {
+    required int parallelThreads,
+    required double sensitivityThreshold,
+    required bool autoSkipEnabled,
+    required Function(int) onThreadsChanged,
+    required Function(double) onSensitivityChanged,
+    required Function(bool) onAutoSkipChanged,
+    required VoidCallback onStartScan,
+  }) {
+    int tempThreads = parallelThreads;
+    double tempSensitivity = sensitivityThreshold;
+    bool tempAutoSkip = autoSkipEnabled;
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Row(
+            children: [
+              Icon(Icons.shield, color: Colors.blue),
+              SizedBox(width: 8),
+              Text('NSFW Detection'),
+            ],
+          ),
+          content: SizedBox(
+            width: 450,
+            child: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Skip Mode Section
+                  const Text(
+                    'Skip Mode',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey.shade300),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(
+                      children: [
+                        RadioListTile<bool>(
+                          title: const Text('Auto-Skip'),
+                          subtitle: const Text(
+                            'Automatically skip NSFW scenes',
+                          ),
+                          value: true,
+                          groupValue: tempAutoSkip,
+                          onChanged: (value) {
+                            setDialogState(() {
+                              tempAutoSkip = value!;
+                            });
+                          },
+                        ),
+                        RadioListTile<bool>(
+                          title: const Text('Warn Only'),
+                          subtitle: const Text(
+                            'Show warning with manual skip option',
+                          ),
+                          value: false,
+                          groupValue: tempAutoSkip,
+                          onChanged: (value) {
+                            setDialogState(() {
+                              tempAutoSkip = value!;
+                            });
+                          },
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Sensitivity Section
+                  const Text(
+                    'Sensitivity Threshold',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      const Text('Low', style: TextStyle(fontSize: 12)),
+                      Expanded(
+                        child: Slider(
+                          value: tempSensitivity,
+                          min: 0.1,
+                          max: 0.9,
+                          divisions: 16,
+                          label: tempSensitivity.toStringAsFixed(2),
+                          onChanged: (value) {
+                            setDialogState(() {
+                              tempSensitivity = value;
+                            });
+                          },
+                        ),
+                      ),
+                      const Text('High', style: TextStyle(fontSize: 12)),
+                    ],
+                  ),
+                  Center(
+                    child: Text(
+                      'Current: ${tempSensitivity.toStringAsFixed(2)}',
+                      style: const TextStyle(
+                        color: Colors.grey,
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.blue.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text(
+                      '✅ Higher = More sensitive (catches more scenes)\n'
+                      'Lower = Less sensitive (only explicit scenes)',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+
+                  // Threads Section
+                  const Text(
+                    'Processing Threads',
+                    style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.shade50,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: const Text(
+                      '⚡ More threads = faster scanning (uses more CPU)',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [1, 2, 4, 6, 8].map((threads) {
+                      return ChoiceChip(
+                        label: Text(
+                          '$threads ${threads == 1 ? 'Thread' : 'Threads'}',
+                        ),
+                        selected: tempThreads == threads,
+                        onSelected: (selected) {
+                          if (selected) {
+                            setDialogState(() {
+                              tempThreads = threads;
+                            });
+                          }
+                        },
+                      );
+                    }).toList(),
+                  ),
+                  if (tempThreads > 1)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: Text(
+                        'Up to ${tempThreads}x faster',
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.green,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton.icon(
+              onPressed: () {
+                // Apply all settings
+                onThreadsChanged(tempThreads);
+                onSensitivityChanged(tempSensitivity);
+                onAutoSkipChanged(tempAutoSkip);
+                Navigator.pop(context);
+                // Start scan
+                onStartScan();
+              },
+              icon: const Icon(Icons.search),
+              label: const Text('Start Scan'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color.fromARGB(255, 82, 176, 132),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }

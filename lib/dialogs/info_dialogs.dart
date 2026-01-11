@@ -168,10 +168,11 @@ class InfoDialogs {
     );
   }
 
+  // FIXED: Now properly updates the text field when loading from file
   static void showLoadSkipsDialog(
     BuildContext context,
     String currentJson,
-    Future<void> Function() onLoadFromFile,
+    Future<void> Function(Function(String)) onLoadFromFile,
     Function(String) onApply,
   ) {
     final TextEditingController controller = TextEditingController(
@@ -180,56 +181,63 @@ class InfoDialogs {
 
     showDialog(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Load Skip Timestamps JSON'),
-        content: SizedBox(
-          width: 400,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                'Format: {"1:02": "1:45", "2:30": "3:00"}',
-                style: TextStyle(fontSize: 12, color: Colors.grey),
-              ),
-              const SizedBox(height: 10),
-              TextField(
-                controller: controller,
-                maxLines: 8,
-                decoration: const InputDecoration(
-                  border: OutlineInputBorder(),
-                  hintText: 'Enter JSON here',
+      builder: (context) => StatefulBuilder(
+        builder: (context, setDialogState) => AlertDialog(
+          title: const Text('Load Skip Timestamps JSON'),
+          content: SizedBox(
+            width: 400,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Format: {"1:02": "1:45", "2:30": "3:00"}',
+                  style: TextStyle(fontSize: 12, color: Colors.grey),
                 ),
-              ),
-              const SizedBox(height: 16),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  ElevatedButton.icon(
-                    onPressed: () async {
-                      await onLoadFromFile();
-                    },
-                    icon: const Icon(Icons.folder_open, size: 18),
-                    label: const Text('Load from File'),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: controller,
+                  maxLines: 8,
+                  decoration: const InputDecoration(
+                    border: OutlineInputBorder(),
+                    hintText: 'Enter JSON here',
                   ),
-                ],
-              ),
-            ],
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    ElevatedButton.icon(
+                      onPressed: () async {
+                        // Pass a callback to update the text field
+                        await onLoadFromFile((loadedJson) {
+                          setDialogState(() {
+                            controller.text = loadedJson;
+                          });
+                        });
+                      },
+                      icon: const Icon(Icons.folder_open, size: 18),
+                      label: const Text('Load from File'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () {
+                onApply(controller.text);
+                Navigator.pop(context);
+              },
+              child: const Text('Apply'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              onApply(controller.text);
-              Navigator.pop(context);
-            },
-            child: const Text('Apply'),
-          ),
-        ],
       ),
     );
   }

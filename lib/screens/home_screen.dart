@@ -436,28 +436,30 @@ class _HomeScreenState extends State<HomeScreen> {
     });
   }
 
+  // Replace your _loadSkipJSON() method with this corrected version:
+
   void _loadSkipJSON() {
     final currentJson = jsonEncode(state.skipTimestamps);
     InfoDialogs.showLoadSkipsDialog(
       context,
       currentJson,
-      () async {
+      // FIXED: Now properly passes the updateTextField callback
+      (updateTextField) async {
         try {
           final content = await skipManager.pickJsonFile();
           if (content != null && mounted) {
-            final timestamps = skipManager.importFromJson(content);
-            setState(() {
-              state = state.copyWith(skipTimestamps: timestamps);
-            });
+            // Update the text field in the dialog immediately
+            updateTextField(content);
+
             ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(content: Text('Skip timestamps loaded!')),
+              const SnackBar(content: Text('File loaded into editor!')),
             );
           }
         } catch (e) {
           if (mounted) {
             ScaffoldMessenger.of(
               context,
-            ).showSnackBar(SnackBar(content: Text('Error: $e')));
+            ).showSnackBar(SnackBar(content: Text('Error loading file: $e')));
           }
         }
       },
@@ -468,7 +470,7 @@ class _HomeScreenState extends State<HomeScreen> {
             state = state.copyWith(skipTimestamps: timestamps);
           });
           ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Skip timestamps loaded!')),
+            const SnackBar(content: Text('Skip timestamps applied!')),
           );
         } catch (e) {
           ScaffoldMessenger.of(
@@ -494,85 +496,6 @@ class _HomeScreenState extends State<HomeScreen> {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       elevation: 8,
       items: _buildMenuItems(),
-    );
-  }
-
-  void _showNSFWSubmenu({required Offset position}) {
-    Navigator.pop(context);
-
-    final RenderBox overlay =
-        Overlay.of(context).context.findRenderObject() as RenderBox;
-    final center = overlay.size.center(Offset.zero);
-
-    showMenu<String>(
-      context: context,
-      position: RelativeRect.fromRect(
-        center & const Size(40, 40),
-        Offset.zero & overlay.size,
-      ),
-      color: Colors.grey[900],
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-      elevation: 8,
-      items: [
-        _buildMenuHeader('🛡️ NSFW DETECTION'),
-        _buildMenuItem(
-          'scan_nsfw',
-          Icons.search,
-          'Start Scan',
-          _scanVideoForNSFW,
-        ),
-        const PopupMenuDivider(),
-        _buildMenuItem(
-          'skip_mode',
-          state.autoSkipEnabled
-              ? Icons.check_circle
-              : Icons.radio_button_unchecked,
-          state.autoSkipEnabled
-              ? 'Auto-Skip (Enabled)'
-              : 'Auto-Skip (Disabled)',
-          () => SettingsDialogs.showSkipModeDialog(
-            context,
-            state.autoSkipEnabled,
-            (value) {
-              setState(() {
-                state = state.copyWith(autoSkipEnabled: value);
-              });
-            },
-          ),
-        ),
-        _buildMenuItem(
-          'detector_settings',
-          Icons.tune,
-          'Detection Settings',
-          () => SettingsDialogs.showDetectorSettingsDialog(
-            context,
-            state.selectedDetector,
-            state.sensitivityThreshold,
-            (detector, threshold) {
-              setState(() {
-                state = state.copyWith(
-                  selectedDetector: detector,
-                  sensitivityThreshold: threshold,
-                );
-              });
-            },
-          ),
-        ),
-        _buildMenuItem(
-          'threads',
-          Icons.memory,
-          'Threads: ${state.parallelThreads}',
-          () => SettingsDialogs.showThreadsDialog(
-            context,
-            state.parallelThreads,
-            (threads) {
-              setState(() {
-                state = state.copyWith(parallelThreads: threads);
-              });
-            },
-          ),
-        ),
-      ],
     );
   }
 
@@ -830,6 +753,8 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // Replace the _buildMenuItems() method in home_screen.dart with this:
+
   List<PopupMenuEntry<String>> _buildMenuItems() {
     return [
       // Open Video (main level)
@@ -852,13 +777,32 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       const PopupMenuDivider(),
 
-      // NSFW Detection Submenu
-      PopupMenuItem<String>(
-        enabled: false,
-        child: _buildSubmenuTrigger(
-          Icons.shield,
-          'NSFW Detection',
-          () => _showNSFWSubmenu(position: Offset.zero),
+      // NSFW Detection - NOW A SINGLE COMPREHENSIVE DIALOG
+      _buildMenuItem(
+        'nsfw_detection',
+        Icons.shield,
+        'NSFW Detection & Scan',
+        () => SettingsDialogs.showNSFWDetectionDialog(
+          context,
+          parallelThreads: state.parallelThreads,
+          sensitivityThreshold: state.sensitivityThreshold,
+          autoSkipEnabled: state.autoSkipEnabled,
+          onThreadsChanged: (threads) {
+            setState(() {
+              state = state.copyWith(parallelThreads: threads);
+            });
+          },
+          onSensitivityChanged: (sensitivity) {
+            setState(() {
+              state = state.copyWith(sensitivityThreshold: sensitivity);
+            });
+          },
+          onAutoSkipChanged: (autoSkip) {
+            setState(() {
+              state = state.copyWith(autoSkipEnabled: autoSkip);
+            });
+          },
+          onStartScan: _scanVideoForNSFW,
         ),
       ),
       const PopupMenuDivider(),
